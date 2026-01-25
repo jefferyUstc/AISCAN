@@ -53,3 +53,8 @@ See [frontend/README.md](frontend/README.md) and [backend/README.md](backend/REA
 ```
 python start_AISCAN.py
 ```
+
+## AISACN interface
+<p align="center">
+  <img src="figs/AISCAN_2.png" alt="AISCAN index">
+</p>
