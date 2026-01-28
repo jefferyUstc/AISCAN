@@ -2,24 +2,28 @@
 
 FastAPI service providing dataset metadata and an agent-powered assistant endpoint.
 
-## Prerequisites
-
-- Python 3.12
-- Optional: `OPENAI_API_KEY` for hosted LLM responses via the OpenAI Agents SDK. If you don't config the `OPENAI_API_KEY`, then you can't use the AI assistant.
-
-
 ## Configuration
 
 All configuration is managed through `src/config/settings.py` with support for environment variable overrides.
 
-### Environment Variables
+### LLM configuration (LiteLLM-only)
+
+AISCAN backend uses the OpenAI Agents SDK with a LiteLLM-only model path. Models are selected via a `litellm/<provider>/<model>` string.
+
+Key environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OPENAI_API_KEY` | - | OpenAI API key for LLM responses |
-| `AISCAN_MODEL` | `gpt-4o-mini` | OpenAI model name |
+| `AISCAN_LLM__MODEL_NAME` | `litellm/openai/gpt-4o` | Canonical LiteLLM-style model string |
+| `OPENAI_API_KEY` | - | OpenAI API key (used by LiteLLM when provider is `openai`) |
+| `ANTHROPIC_API_KEY` | - | Anthropic API key (when provider is `anthropic`) |
+| `GEMINI_API_KEY` | - | Gemini API key (when provider is `gemini`) |
+| `OPENAI_API_BASE` | - | Optional custom OpenAI-compatible base URL |
+| `LITELLM_API_BASE` | - | Optional LiteLLM proxy/gateway base URL |
 | `AISCAN_DATASET` | (Optional) | Path to `.h5ad` file. If unset, uses the first `.h5ad` in `data/` |
 | `AISCAN_ORGANISM` | `Unknown` | Default organism name |
+
+For more examples, see `backend/readme_model_config.md`.
 
 ### Data Management
 

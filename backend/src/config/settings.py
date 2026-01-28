@@ -1,7 +1,7 @@
 """AISCAN Backend Settings.
 
 Centralized configuration with environment variable support.
-Environment variables: AISCAN_MODEL, AISCAN_DATASET, AISCAN_ORGANISM, OPENAI_API_KEY
+Environment variables: , AISCAN_DATASET, AISCAN_ORGANISM, OPENAI_API_KEY
 """
 
 from __future__ import annotations
@@ -16,8 +16,9 @@ from .paths import Paths
 
 
 class LLMSettings(BaseModel):
-    """LLM configuration."""
-    model_name: str = "gpt-4o-mini"
+    """LLM configuration (LiteLLM-only)."""
+    # liteLLM-style model string: litellm/<provider>/<model>
+    model_name: str = "litellm/openai/gpt-4o"
     temperature: float = 0.15
     max_conversation_history: int = 10
 
@@ -107,10 +108,6 @@ class Settings(BaseSettings):
         if env_organism and "organism" not in kwargs:
             kwargs["organism"] = env_organism
         
-        legacy_model = os.getenv("AISCAN_MODEL")
-        if legacy_model and "llm" not in kwargs:
-            kwargs["llm"] = LLMSettings(model_name=legacy_model)
-        
         if "chembl_mcp_path" not in kwargs:
             env_path = os.getenv("AISCAN_CHEMBL_MCP_PATH")
             if env_path:
@@ -122,6 +119,28 @@ class Settings(BaseSettings):
                     kwargs["chembl_mcp_path"] = str(default_path)
 
         super().__init__(**kwargs)
+
+        # Final safeguard: ensure llm.model_name is a litellm-style string.
+        if self.llm and self.llm.model_name:
+            self.llm.model_name = self._normalize_model_name(self.llm.model_name)
+
+    @staticmethod
+    def _normalize_model_name(model_name: str) -> str:
+        """Normalize model names to LiteLLM-style strings.
+
+        Rules:
+        - If already starts with 'litellm/', keep as-is.
+        - If contains a '/', prefix with 'litellm/' (e.g. 'openai/gpt-4o' -> 'litellm/openai/gpt-4o').
+        - Otherwise treat as OpenAI short name and prefix 'litellm/openai/' (e.g. 'gpt-4o').
+        """
+        if not model_name:
+            return model_name
+        name = model_name.strip()
+        if name.startswith("litellm/"):
+            return name
+        if "/" in name:
+            return f"litellm/{name}"
+        return f"litellm/openai/{name}"
 
 
 _settings: Optional[Settings] = None

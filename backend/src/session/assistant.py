@@ -29,7 +29,8 @@ class SessionAwareAssistantEngine:
     def __init__(self, dataset_store: DatasetStore) -> None:
         settings = get_settings()
         
-        self.enabled = bool(settings.openai_api_key)
+        # LiteLLM-only: enabled if we have a non-empty model string.
+        self.enabled = bool(settings.llm and settings.llm.model_name)
         self.dataset_store = dataset_store
         self.settings = settings
         
@@ -58,20 +59,49 @@ class SessionAwareAssistantEngine:
 
         session = self._get_session(user_id, session_id)
 
-        if self.enabled:
-            try:
-                response = await self._run_agent_with_sdk_session(
-                    session, prompt, context
-                )
-                return response
-            except AgentsException as exc:
-                LOGGER.exception("openai-agents execution failed")
-                return self._fallback_response()
-            except Exception as exc:
-                LOGGER.exception("Unexpected assistant failure")
-                return self._fallback_response()
-        else:
-            return self._fallback_response()
+        if not self.enabled:
+            raise HTTPException(status_code=500, detail="LLM model is not configured.")
+
+        try:
+            response = await self._run_agent_with_sdk_session(
+                session, prompt, context
+            )
+            return response
+        except AgentsException as exc:
+            model_name = self.settings.llm.model_name if self.settings.llm else "<unknown>"
+            # Red-colored log line for visibility in terminal logs.
+            LOGGER.error(
+                "\033[91mopenai-agents execution failed for model %s: %s (%s)\033[0m",
+                model_name,
+                str(exc),
+                exc.__class__.__name__,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "error": "Agent execution failed",
+                    "model": model_name,
+                    "exception_type": exc.__class__.__name__,
+                    "message": str(exc),
+                },
+            ) from exc
+        except Exception as exc:
+            model_name = self.settings.llm.model_name if self.settings.llm else "<unknown>"
+            LOGGER.error(
+                "\033[91mUnexpected assistant failure for model %s: %s (%s)\033[0m",
+                model_name,
+                str(exc),
+                exc.__class__.__name__,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "error": "Unexpected assistant failure",
+                    "model": model_name,
+                    "exception_type": exc.__class__.__name__,
+                    "message": str(exc),
+                },
+            ) from exc
 
     async def _run_agent_with_sdk_session(
         self,
@@ -324,10 +354,6 @@ class SessionAwareAssistantEngine:
             )
         reply_text = payload.message.strip() if payload.message else ""
         return AssistantResponse(reply=reply_text, annotations=annotations)
-
-    def _fallback_response(self) -> AssistantResponse:
-        """Return fallback response when AI is unavailable."""
-        return AssistantResponse(reply="LLM model unavailable for now.", annotations=None)
 
     @staticmethod
     def _humanize_filters(filters: Optional[object]) -> str:

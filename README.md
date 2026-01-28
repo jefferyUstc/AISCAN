@@ -35,17 +35,17 @@ npm install
 
 Configure the required environment before starting the backend service:
 
-* set environment variables
+* set environment variables (see `backend/readme_model_config.md` for full LLM/provider options)
 ```bash
 export OPENAI_API_KEY=sk-...
-export AISCAN_MODEL=gpt-4o-mini
+export AISCAN_LLM__MODEL_NAME="litellm/openai/gpt-4o"
 ```
 * place the h5ad file in `backend/data`
 * place the docs files (*.txt) in `backend/data/docs`
 
 you could download one well-prepared example dataset from [zenodo](https://zenodo.org/records/18356503), download the  showcase data then put the files under `backend/data`.
 
-See [frontend/README.md](frontend/README.md) and [backend/README.md](backend/README.md) for more instructions.
+See [frontend/README.md](frontend/README.md) and [backend/README.md](backend/README.md) for more instructions, and **`backend/readme_model_config.md`** for detailed LLM configuration (OpenAI / Anthropic / Gemini / gateways).
 
 
 ### step3: start AISCAN
