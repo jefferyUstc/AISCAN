@@ -45,8 +45,7 @@ export AISCAN_LLM__MODEL_NAME="litellm/openai/gpt-4o"
 
 you could download one well-prepared example dataset from [zenodo](https://zenodo.org/records/18356503), download the  showcase data then put the files under `backend/data`.
 
-See [frontend/README.md](frontend/README.md) and [backend/README.md](backend/README.md) for more instructions, and **`backend/readme_model_config.md`** for detailed LLM configuration (OpenAI / Anthropic / Gemini / gateways).
-
+See [frontend/README.md](frontend/README.md) and [backend/README.md](backend/README.md) for more instructions, and [backend/readme_model_config.md](backend/readme_model_config.md) for detailed LLM configuration (OpenAI / Anthropic / Gemini).
 
 ### step3: start AISCAN
 
