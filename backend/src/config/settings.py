@@ -27,6 +27,9 @@ class LLMSettings(BaseModel):
     top_p: Optional[float] = None
     reasoning_effort: Optional[Literal["minimal", "low", "medium", "high"]] = "medium"
     verbosity: Optional[Literal["low", "medium", "high"]] = None
+    # Default of "24h" extends the OpenAI prompt cache TTL from 5 minutes
+    # (in_memory) to 24 hours. Free; both chat and reasoning families honor it.
+    prompt_cache_retention: Optional[Literal["in_memory", "24h"]] = "24h"
     max_conversation_history: int = 10
     max_turns: int = 8
     request_timeout_seconds: float = 120.0
@@ -49,11 +52,13 @@ class RAGSettings(BaseModel):
 
 
 class SessionSettings(BaseModel):
-    """Session management configuration."""
+    """Session management configuration.
+
+    Sessions are retired by two cutoffs (hard age + idle window) and the
+    background scheduler runs cleanup on `cleanup_interval_minutes`.
+    """
     max_session_age_hours: int = 168
-    max_idle_hours: int = 24
-    max_messages_per_session: int = 100
-    trim_to_messages: int = 20
+    max_idle_hours: int = 72
     cleanup_interval_minutes: int = 60
 
 

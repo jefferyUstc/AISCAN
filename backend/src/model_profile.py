@@ -69,6 +69,7 @@ def build_model_settings(
     top_p: Optional[float] = None,
     reasoning_effort: Optional[ReasoningEffort] = None,
     verbosity: Optional[Verbosity] = None,
+    prompt_cache_retention: Optional[Literal["in_memory", "24h"]] = None,
 ) -> ModelSettings:
     """Construct ModelSettings, silently dropping params unsupported by `model`.
 
@@ -86,5 +87,7 @@ def build_model_settings(
         kwargs["reasoning"] = Reasoning(effort=reasoning_effort)
     if profile.supports_verbosity and verbosity is not None:
         kwargs["verbosity"] = verbosity
+    if prompt_cache_retention is not None:
+        kwargs["prompt_cache_retention"] = prompt_cache_retention
 
     return ModelSettings(**kwargs)

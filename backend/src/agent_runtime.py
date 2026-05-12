@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Any, List, Optional, Sequence
 
 from agents import Agent
 from pydantic import BaseModel
@@ -60,18 +60,26 @@ class AssistantPayload(BaseModel):
     citations: Optional[List[str]] = None
 
 
-def build_base_agent(model_name: Optional[str] = None) -> Agent:
+def build_base_agent(
+    model_name: Optional[str] = None,
+    instructions: Optional[str] = None,
+    mcp_servers: Optional[Sequence[Any]] = None,
+) -> Agent:
     """Construct the shared base Agent for the assistant.
 
     Args:
         model_name: Optional override; falls back to ``settings.llm.model_name``.
+        instructions: Optional system-prompt override; defaults to BASE_INSTRUCTIONS.
+            Callers can pre-compose dataset-static context so the prompt stays
+            byte-stable across requests and benefits from prompt caching.
+        mcp_servers: Long-lived MCP servers (e.g. ChEMBL) to attach to the agent.
     """
     settings = get_settings()
     model = model_name or settings.llm.model_name
 
     return Agent(
         name="AISCAN Assistant",
-        instructions=BASE_INSTRUCTIONS,
+        instructions=instructions or BASE_INSTRUCTIONS,
         model=model,
         model_settings=build_model_settings(
             model,
@@ -79,7 +87,9 @@ def build_base_agent(model_name: Optional[str] = None) -> Agent:
             top_p=settings.llm.top_p,
             reasoning_effort=settings.llm.reasoning_effort,
             verbosity=settings.llm.verbosity,
+            prompt_cache_retention=settings.llm.prompt_cache_retention,
         ),
         tools=[resolve_filters, resolve_gene, resolve_embedding, search_knowledge_base, web_search],
         output_type=AssistantPayload,
+        mcp_servers=list(mcp_servers) if mcp_servers else [],
     )

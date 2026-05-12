@@ -4,11 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from typing import Any, Dict, List, Optional
 
 from agents import Runner, SQLiteSession
-from agents.mcp import MCPServerStdio
 from fastapi import HTTPException
 from openai import (
     APIConnectionError,
@@ -17,7 +15,12 @@ from openai import (
     RateLimitError,
 )
 
-from ..agent_runtime import AgentContext, AssistantPayload, build_base_agent
+from ..agent_runtime import (
+    AgentContext,
+    AssistantPayload,
+    BASE_INSTRUCTIONS,
+    build_base_agent,
+)
 from ..config import get_settings, Paths
 from ..dataset_store import DatasetStore
 from ..models import AssistantAnnotations, AssistantResponse, Filter
@@ -27,24 +30,36 @@ LOGGER = logging.getLogger(__name__)
 
 
 class SessionAwareAssistantEngine:
-    """Assistant orchestrator using OpenAI Agents SDK built-in sessions."""
+    """Assistant orchestrator using OpenAI Agents SDK built-in sessions.
 
-    def __init__(self, dataset_store: DatasetStore) -> None:
+    The base agent is constructed once with byte-stable system instructions
+    (BASE_INSTRUCTIONS + dataset-static summary) so the system prompt benefits
+    from OpenAI prompt caching. Per-request dynamic state (active filters) is
+    injected inline into the user message instead of mutating the system
+    prompt. A pre-started MCP server, when provided, is attached at agent
+    construction time and reused across all requests.
+    """
+
+    def __init__(
+        self,
+        dataset_store: DatasetStore,
+        chembl_mcp: Optional[Any] = None,
+    ) -> None:
         settings = get_settings()
-        
         self.enabled = bool(settings.openai_api_key)
         self.dataset_store = dataset_store
         self.settings = settings
-        
-        self.base_agent = build_base_agent(settings.llm.model_name)
-        
         self.session_db_path = str(Paths.SESSION_DB)
-        
         self.embedding_service = get_embedding_service()
         self.vector_store = get_vector_store()
 
+        self.base_agent = build_base_agent(
+            model_name=settings.llm.model_name,
+            instructions=self._build_static_instructions(),
+            mcp_servers=[chembl_mcp] if chembl_mcp else None,
+        )
+
     def _get_session(self, user_id: str, session_id: str) -> SQLiteSession:
-        """Get or create an SDK session for the user/session combination."""
         composite_session_id = f"{user_id}:{session_id}"
         return SQLiteSession(composite_session_id, self.session_db_path)
 
@@ -55,19 +70,17 @@ class SessionAwareAssistantEngine:
         context: Dict[str, Any],
         session_id: str,
     ) -> AssistantResponse:
-        """Generate response using SDK's built-in session management."""
+        """Generate a response within an SDK-managed session."""
         if not prompt.strip():
             raise HTTPException(status_code=400, detail="Prompt must not be empty")
-
-        session = self._get_session(user_id, session_id)
-
         if not self.enabled:
             return self._fallback_response(None)
 
-        # Narrow fallback: only the user-actionable OpenAI errors get a graceful
-        # reply. Everything else (5xx, AgentsException, our own bugs) must
-        # propagate so it surfaces as a 500 with traceback — silent fallbacks
-        # mask real problems.
+        session = self._get_session(user_id, session_id)
+
+        # Narrow fallback: only the user-actionable OpenAI errors degrade into
+        # a graceful reply. 5xx, AgentsException, and bugs propagate so they
+        # surface as HTTP 500 with traceback.
         try:
             return await self._run_agent_with_sdk_session(session, prompt, context)
         except (AuthenticationError, RateLimitError, APIConnectionError) as exc:
@@ -86,37 +99,9 @@ class SessionAwareAssistantEngine:
         prompt: str,
         request_context: Dict[str, Any],
     ) -> AssistantResponse:
-        """Run the agent with SDK session-based conversation history."""
-        instructions = self._compose_instructions(request_context)
-        
-        agent = self.base_agent.clone(instructions=instructions)
-
         agent_context = self._build_agent_context(request_context)
-
-        chembl_path = self.settings.chembl_mcp_path
-        if chembl_path and os.path.exists(chembl_path):
-            # Catch only subprocess spawn failures here. OpenAI/Runner errors
-            # raised inside the `async with` block must propagate — retrying
-            # without MCP would just hit the same upstream issue.
-            try:
-                LOGGER.info("Connecting to ChEMBL MCP server at %s", chembl_path)
-                async with MCPServerStdio(
-                    name="ChEMBL MCP",
-                    params={"command": "node", "args": [chembl_path]},
-                    cache_tools_list=True,
-                ) as mcp_server:
-                    payload = await self._run_agent(
-                        agent.clone(mcp_servers=[mcp_server]),
-                        prompt, agent_context, session,
-                    )
-                    return self._payload_to_response(payload)
-            except (FileNotFoundError, OSError, ConnectionError, BrokenPipeError) as exc:
-                LOGGER.warning(
-                    "ChEMBL MCP unavailable (%s: %s); continuing without it",
-                    type(exc).__name__, exc,
-                )
-
-        payload = await self._run_agent(agent, prompt, agent_context, session)
+        wrapped = self._wrap_user_message(prompt, request_context)
+        payload = await self._run_agent(self.base_agent, wrapped, agent_context, session)
         return self._payload_to_response(payload)
 
     async def _run_agent(
@@ -146,57 +131,64 @@ class SessionAwareAssistantEngine:
             ) from exc
         return result.final_output_as(AssistantPayload)
 
-    def _compose_instructions(self, context: Dict[str, Any]) -> str:
-        """Compose instructions with current dataset state."""
+    def _build_static_instructions(self) -> str:
+        """Compose the system prompt once from BASE_INSTRUCTIONS plus
+        dataset-static facts. Per-request state lives in the user message."""
         dataset = self.dataset_store.get_overview().dataset
-        filter_text = self._humanize_filters(context.get("filters"))
-        
-        stats_text = []
-        if dataset.obsStats:
-            for col, stat in dataset.obsStats.items():
-                if stat.get("type") == "numeric":
-                    stats_text.append(f"- {col} (numeric): range [{stat['min']:.2f}, {stat['max']:.2f}], mean {stat['mean']:.2f}")
-                elif stat.get("type") == "categorical":
-                    cats = ", ".join(map(str, stat.get("categories", [])))
-                    stats_text.append(f"- {col} (categorical): {cats}")
-                elif stat.get("type") == "categorical_high_cardinality":
-                    sample = ", ".join(map(str, stat.get("sample", [])))
-                    stats_text.append(f"- {col} (categorical, {stat['unique_count']} unique): {sample}, ...")
-        
-        obs_context = "\n".join(stats_text)
-
-        desc_text = f"Dataset Description:\n{dataset.description}\n\n" if dataset.description else ""
-
-        summary = (
-            f"Dataset {dataset.name} (id {dataset.id}) has {dataset.cellCount} cells and {dataset.geneCount} features.\n"
-            f"Active embedding: {dataset.activeEmbedding}. Available embeddings: {', '.join(dataset.availableEmbeddings)}.\n"
-            f"Active filters: {filter_text}.\n\n"
-            f"{desc_text}"
-            f"Cell Metadata (obs) columns:\n{obs_context}"
+        stats_lines: List[str] = []
+        for col, stat in (dataset.obsStats or {}).items():
+            kind = stat.get("type")
+            if kind == "numeric":
+                stats_lines.append(
+                    f"- {col} (numeric): range [{stat['min']:.2f}, {stat['max']:.2f}], "
+                    f"mean {stat['mean']:.2f}"
+                )
+            elif kind == "categorical":
+                cats = ", ".join(map(str, stat.get("categories", [])))
+                stats_lines.append(f"- {col} (categorical): {cats}")
+            elif kind == "categorical_high_cardinality":
+                sample = ", ".join(map(str, stat.get("sample", [])))
+                stats_lines.append(
+                    f"- {col} (categorical, {stat['unique_count']} unique): {sample}, ..."
+                )
+        desc_block = (
+            f"Dataset Description:\n{dataset.description}\n\n"
+            if dataset.description else ""
         )
-        return f"{self.base_agent.instructions}\n{summary}"
+        summary = (
+            f"Dataset {dataset.name} (id {dataset.id}) has {dataset.cellCount} cells "
+            f"and {dataset.geneCount} features.\n"
+            f"Default embedding: {dataset.activeEmbedding}. "
+            f"Available embeddings: {', '.join(dataset.availableEmbeddings)}.\n\n"
+            f"{desc_block}"
+            f"Cell Metadata (obs) columns:\n" + "\n".join(stats_lines)
+        )
+        return f"{BASE_INSTRUCTIONS}\n{summary}"
+
+    def _wrap_user_message(self, prompt: str, context: Dict[str, Any]) -> str:
+        """Prepend per-request state to the user prompt so the system prompt
+        stays byte-stable across requests."""
+        filter_text = self._humanize_filters(context.get("filters"))
+        if filter_text == "none":
+            return prompt
+        return f"[Active filters: {filter_text}]\n\n{prompt}"
 
     def _build_agent_context(self, context: Dict[str, Any]) -> AgentContext:
-        """Build agent context from request context."""
         request_filters: List[Filter] = []
-        raw_filters = context.get("filters")
-        if isinstance(raw_filters, list):
-            for item in raw_filters:
-                if isinstance(item, dict):
-                    dimension = item.get("dimension")
-                    value = item.get("value")
-                    if dimension and value:
-                        request_filters.append(Filter(dimension=str(dimension), value=str(value)))
-        
+        for item in context.get("filters") or []:
+            if isinstance(item, dict):
+                dimension = item.get("dimension")
+                value = item.get("value")
+                if dimension and value:
+                    request_filters.append(Filter(dimension=str(dimension), value=str(value)))
         return AgentContext(
-            dataset_store=self.dataset_store, 
+            dataset_store=self.dataset_store,
             request_filters=request_filters,
             embedding_service=self.embedding_service,
-            vector_store=self.vector_store
+            vector_store=self.vector_store,
         )
 
     def _payload_to_response(self, payload: AssistantPayload) -> AssistantResponse:
-        """Convert payload to response format."""
         annotations: Optional[AssistantAnnotations] = None
         if any([payload.title, payload.summary, payload.filters, payload.actions, payload.citations]):
             annotations = AssistantAnnotations(
@@ -210,7 +202,6 @@ class SessionAwareAssistantEngine:
         return AssistantResponse(reply=reply_text, annotations=annotations)
 
     def _fallback_response(self, exc: Optional[BaseException]) -> AssistantResponse:
-        """Return fallback response with a user-actionable reason when possible."""
         if exc is None:
             msg = "AI assistant is not configured (OPENAI_API_KEY missing)."
         else:
@@ -237,12 +228,10 @@ class SessionAwareAssistantEngine:
                 detail = getattr(exc, "message", "") or str(exc)
             status = getattr(exc, "status_code", "?")
             return f"OpenAI rejected the request ({status}): {detail}"
-        # Should not reach here — outer try/except only catches the above types.
         return f"Assistant error: {type(exc).__name__}: {exc}"
 
     @staticmethod
     def _humanize_filters(filters: Optional[object]) -> str:
-        """Convert filters to human-readable string."""
         if not filters:
             return "none"
         elements: List[str] = []
@@ -257,28 +246,22 @@ class SessionAwareAssistantEngine:
         return ", ".join(elements) or "none"
 
     async def get_session_messages(self, user_id: str, session_id: str) -> List[Dict[str, Any]]:
-        """Get messages for a specific session using SDK."""
         session = self._get_session(user_id, session_id)
         items = await session.get_items()
-        
         messages = []
         for i, item in enumerate(items):
             role = item.get("role", "unknown")
             content = item.get("content", "")
-            
             if isinstance(content, list):
                 text_parts = [p.get("text", "") for p in content if p.get("type") == "text"]
                 content = " ".join(text_parts)
-            
             messages.append({
                 "id": f"{session_id}-{i}",
                 "role": role,
                 "content": content if isinstance(content, str) else str(content),
             })
-        
         return messages
 
     async def clear_session(self, user_id: str, session_id: str) -> None:
-        """Clear a specific session."""
         session = self._get_session(user_id, session_id)
         await session.clear_session()
