@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from agents import Agent, ModelSettings
+from agents import Agent
 from pydantic import BaseModel
 
 from .config import get_settings
+from .model_profile import build_model_settings
 from .models import Action, Filter
 from .toolsets import (
     AgentContext,
@@ -59,12 +60,19 @@ def build_base_agent(model_name: Optional[str] = None) -> Agent:
         Agent configured with specified or default settings.
     """
     settings = get_settings()
-    
+    model = model_name or settings.llm.model_name
+
     return Agent(
         name="AISCAN Assistant",
         instructions=BASE_INSTRUCTIONS,
-        model=model_name or settings.llm.model_name,
-        model_settings=ModelSettings(temperature=settings.llm.temperature),
+        model=model,
+        model_settings=build_model_settings(
+            model,
+            temperature=settings.llm.temperature,
+            top_p=settings.llm.top_p,
+            reasoning_effort=settings.llm.reasoning_effort,
+            verbosity=settings.llm.verbosity,
+        ),
         tools=[resolve_filters, resolve_gene, resolve_embedding, search_knowledge_base, web_search],
     )
 

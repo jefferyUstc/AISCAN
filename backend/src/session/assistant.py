@@ -10,9 +10,14 @@ import re
 from typing import Any, Dict, List, Optional
 
 from agents import Runner, SQLiteSession
-from agents.exceptions import AgentsException
 from agents.mcp import MCPServerStdio
 from fastapi import HTTPException
+from openai import (
+    APIConnectionError,
+    APIStatusError,
+    AuthenticationError,
+    RateLimitError,
+)
 
 from ..agent_runtime import AgentContext, AssistantPayload, build_base_agent
 from ..config import get_settings, Paths
@@ -58,20 +63,24 @@ class SessionAwareAssistantEngine:
 
         session = self._get_session(user_id, session_id)
 
-        if self.enabled:
-            try:
-                response = await self._run_agent_with_sdk_session(
-                    session, prompt, context
-                )
-                return response
-            except AgentsException as exc:
-                LOGGER.exception("openai-agents execution failed")
-                return self._fallback_response()
-            except Exception as exc:
-                LOGGER.exception("Unexpected assistant failure")
-                return self._fallback_response()
-        else:
-            return self._fallback_response()
+        if not self.enabled:
+            return self._fallback_response(None)
+
+        # Narrow fallback: only the user-actionable OpenAI errors get a graceful
+        # reply. Everything else (5xx, AgentsException, our own bugs) must
+        # propagate so it surfaces as a 500 with traceback — silent fallbacks
+        # mask real problems.
+        try:
+            return await self._run_agent_with_sdk_session(session, prompt, context)
+        except (AuthenticationError, RateLimitError, APIConnectionError) as exc:
+            LOGGER.warning("OpenAI side issue: %s: %s", type(exc).__name__, exc)
+            return self._fallback_response(exc)
+        except APIStatusError as exc:
+            status = getattr(exc, "status_code", 0) or 0
+            if 400 <= status < 500:
+                LOGGER.warning("OpenAI rejected request (%s): %s", status, exc)
+                return self._fallback_response(exc)
+            raise
 
     async def _run_agent_with_sdk_session(
         self,
@@ -88,6 +97,9 @@ class SessionAwareAssistantEngine:
 
         chembl_path = self.settings.chembl_mcp_path
         if chembl_path and os.path.exists(chembl_path):
+            # Only swallow MCP *spawn/connect* failures — never OpenAI/Runner
+            # errors that happen inside the `async with`, since retrying without
+            # MCP just hits the same upstream issue and hides the real cause.
             try:
                 LOGGER.info("Connecting to ChEMBL MCP server at %s", chembl_path)
                 async with MCPServerStdio(
@@ -98,24 +110,22 @@ class SessionAwareAssistantEngine:
                     },
                     cache_tools_list=True,
                 ) as mcp_server:
-                    # openai-agents>=0.6.x supports passing mcp_servers via Agent/clone directly.
                     agent_with_mcp = agent.clone(mcp_servers=[mcp_server])
-
                     result = await Runner.run(
                         agent_with_mcp,
                         prompt,
                         context=agent_context,
                         session=session,
                     )
-
                     final_text = getattr(result, "final_output", None) or ""
                     payload = self._parse_json_response(final_text)
                     payload = self._postprocess_payload(payload, prompt)
                     return self._payload_to_response(payload)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                LOGGER.exception("ChEMBL MCP server failed; falling back to non-MCP run")
+            except (FileNotFoundError, OSError, ConnectionError, BrokenPipeError) as exc:
+                LOGGER.warning(
+                    "ChEMBL MCP unavailable (%s: %s); continuing without it",
+                    type(exc).__name__, exc,
+                )
 
         result = await Runner.run(
             agent, 
@@ -325,9 +335,36 @@ class SessionAwareAssistantEngine:
         reply_text = payload.message.strip() if payload.message else ""
         return AssistantResponse(reply=reply_text, annotations=annotations)
 
-    def _fallback_response(self) -> AssistantResponse:
-        """Return fallback response when AI is unavailable."""
-        return AssistantResponse(reply="LLM model unavailable for now.", annotations=None)
+    def _fallback_response(self, exc: Optional[BaseException]) -> AssistantResponse:
+        """Return fallback response with a user-actionable reason when possible."""
+        if exc is None:
+            msg = "AI assistant is not configured (OPENAI_API_KEY missing)."
+        else:
+            msg = self._classify_error(exc)
+        return AssistantResponse(reply=msg, annotations=None)
+
+    @staticmethod
+    def _classify_error(exc: BaseException) -> str:
+        """Map a caught OpenAI exception to a user-facing diagnostic message."""
+        if isinstance(exc, AuthenticationError):
+            return "OpenAI authentication failed. Check OPENAI_API_KEY."
+        if isinstance(exc, RateLimitError):
+            return "OpenAI rate limit exceeded. Please retry in a moment."
+        if isinstance(exc, APIConnectionError):
+            return "Could not reach OpenAI. Check your network."
+        if isinstance(exc, APIStatusError):
+            detail = ""
+            try:
+                body = exc.response.json()
+                detail = (body.get("error") or {}).get("message", "") or ""
+            except Exception:
+                pass
+            if not detail:
+                detail = getattr(exc, "message", "") or str(exc)
+            status = getattr(exc, "status_code", "?")
+            return f"OpenAI rejected the request ({status}): {detail}"
+        # Should not reach here — outer try/except only catches the above types.
+        return f"Assistant error: {type(exc).__name__}: {exc}"
 
     @staticmethod
     def _humanize_filters(filters: Optional[object]) -> str:

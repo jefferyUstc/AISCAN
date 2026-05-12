@@ -7,7 +7,7 @@ Environment variables: AISCAN_MODEL, AISCAN_DATASET, AISCAN_ORGANISM, OPENAI_API
 from __future__ import annotations
 
 import os
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -16,9 +16,17 @@ from .paths import Paths
 
 
 class LLMSettings(BaseModel):
-    """LLM configuration."""
+    """LLM configuration.
+
+    `temperature` / `top_p` are honored only on chat models (gpt-4o*, gpt-4.1*,
+    gpt-5-chat-latest). `reasoning_effort` / `verbosity` are honored only on
+    reasoning models (gpt-5*, o1/o3/o4*). The model_profile module routes them.
+    """
     model_name: str = "gpt-4o-mini"
-    temperature: float = 0.15
+    temperature: Optional[float] = 0.15
+    top_p: Optional[float] = None
+    reasoning_effort: Optional[Literal["minimal", "low", "medium", "high"]] = "medium"
+    verbosity: Optional[Literal["low", "medium", "high"]] = None
     max_conversation_history: int = 10
 
 
