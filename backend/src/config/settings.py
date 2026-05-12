@@ -25,8 +25,10 @@ class LLMSettings(BaseModel):
     model_name: str = "gpt-4o-mini"
     temperature: Optional[float] = 0.15
     top_p: Optional[float] = None
-    reasoning_effort: Optional[Literal["minimal", "low", "medium", "high"]] = "medium"
-    verbosity: Optional[Literal["low", "medium", "high"]] = None
+    reasoning_effort: Optional[Literal["minimal", "low", "medium", "high"]] = "low"
+    # Explicit value (vs None) documents intent and locks in the level if
+    # OpenAI changes a model's default; chat-family models ignore it.
+    verbosity: Optional[Literal["low", "medium", "high"]] = "medium"
     # Default of "24h" extends the OpenAI prompt cache TTL from 5 minutes
     # (in_memory) to 24 hours. Free; both chat and reasoning families honor it.
     prompt_cache_retention: Optional[Literal["in_memory", "24h"]] = "24h"
