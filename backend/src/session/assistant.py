@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
-import re
 from typing import Any, Dict, List, Optional
 
 from agents import Runner, SQLiteSession
@@ -22,7 +20,7 @@ from openai import (
 from ..agent_runtime import AgentContext, AssistantPayload, build_base_agent
 from ..config import get_settings, Paths
 from ..dataset_store import DatasetStore
-from ..models import Action, AssistantAnnotations, AssistantResponse, Filter
+from ..models import AssistantAnnotations, AssistantResponse, Filter
 from ..rag import get_embedding_service, get_vector_store
 
 LOGGER = logging.getLogger(__name__)
@@ -97,29 +95,20 @@ class SessionAwareAssistantEngine:
 
         chembl_path = self.settings.chembl_mcp_path
         if chembl_path and os.path.exists(chembl_path):
-            # Only swallow MCP *spawn/connect* failures — never OpenAI/Runner
-            # errors that happen inside the `async with`, since retrying without
-            # MCP just hits the same upstream issue and hides the real cause.
+            # Catch only subprocess spawn failures here. OpenAI/Runner errors
+            # raised inside the `async with` block must propagate — retrying
+            # without MCP would just hit the same upstream issue.
             try:
                 LOGGER.info("Connecting to ChEMBL MCP server at %s", chembl_path)
                 async with MCPServerStdio(
                     name="ChEMBL MCP",
-                    params={
-                        "command": "node",
-                        "args": [chembl_path],
-                    },
+                    params={"command": "node", "args": [chembl_path]},
                     cache_tools_list=True,
                 ) as mcp_server:
-                    agent_with_mcp = agent.clone(mcp_servers=[mcp_server])
-                    result = await Runner.run(
-                        agent_with_mcp,
-                        prompt,
-                        context=agent_context,
-                        session=session,
+                    payload = await self._run_agent(
+                        agent.clone(mcp_servers=[mcp_server]),
+                        prompt, agent_context, session,
                     )
-                    final_text = getattr(result, "final_output", None) or ""
-                    payload = self._parse_json_response(final_text)
-                    payload = self._postprocess_payload(payload, prompt)
                     return self._payload_to_response(payload)
             except (FileNotFoundError, OSError, ConnectionError, BrokenPipeError) as exc:
                 LOGGER.warning(
@@ -127,150 +116,35 @@ class SessionAwareAssistantEngine:
                     type(exc).__name__, exc,
                 )
 
-        result = await Runner.run(
-            agent, 
-            prompt, 
-            context=agent_context,
-            session=session
-        )
-
-        final_text = getattr(result, "final_output", None) or ""
-        payload = self._parse_json_response(final_text)
-        payload = self._postprocess_payload(payload, prompt)
+        payload = await self._run_agent(agent, prompt, agent_context, session)
         return self._payload_to_response(payload)
 
-    @staticmethod
-    def _normalize_not_exist_text(text: str) -> Optional[str]:
-        """
-        Normalize common "not exist" replies to strict UI contracts.
-
-        Contracts:
-        - Gene: XXX  not exist   (two spaces before 'not')
-        - Embedding: XXX not exist
-        """
-        if not text:
-            return None
-        m_gene = re.match(r"^Gene:\s*(\S+)\s+not\s+exist\s*$", text)
-        if m_gene:
-            return f"Gene: {m_gene.group(1)}  not exist"
-        m_emb = re.match(r"^Embedding:\s*(\S+)\s+not\s+exist\s*$", text)
-        if m_emb:
-            return f"Embedding: {m_emb.group(1)} not exist"
-        return None
-
-    @staticmethod
-    def _norm_token(text: str) -> str:
-        """Lowercase + keep only alnum (used for robust matching against user prompts)."""
-        return "".join(ch for ch in (text or "").lower() if ch.isalnum())
-
-    def _postprocess_payload(self, payload: AssistantPayload, prompt: str) -> AssistantPayload:
-        """
-        Safety net: if the model failed to emit actions for certain UI controls we support,
-        we can deterministically infer them from the user prompt and dataset metadata.
-        This keeps the UI controllable even when the model skips a tool call.
-        """
-        if not prompt or not payload:
-            return payload
-
-        # Embedding switch: only trigger if the prompt actually contains one of the available
-        # embedding names (normalized). This avoids accidental matches on generic "show ...".
-        if not payload.actions:
-            available = list(self.dataset_store.get_overview().dataset.availableEmbeddings or [])
-            p_norm = self._norm_token(prompt)
-            candidate: Optional[str] = None
-            for emb in available:
-                emb_norm = self._norm_token(emb)
-                if emb_norm and emb_norm in p_norm:
-                    candidate = emb
-                    break
-                if self._norm_token(f"X_{emb}") in p_norm:
-                    candidate = emb
-                    break
-
-            if candidate:
-                result = self.dataset_store.verify_embeddings([candidate])
-                found = result.get("found") or []
-                if found:
-                    payload.actions = [Action(type="set_embedding", value=found[0])]
-                    # If the model claimed it doesn't exist, override with a helpful message.
-                    if payload.message and payload.message.strip().lower().startswith("embedding:") and "not exist" in payload.message.lower():
-                        payload.message = f"Switched embedding to {found[0]}."
-
-        return payload
-    
-    def _parse_json_response(self, text: str) -> AssistantPayload:
-        """Parse JSON response from agent into AssistantPayload."""
-        if not text:
-            return AssistantPayload(message="No response generated.")
-        
-        text = text.strip()
-        if text.startswith("```"):
-            lines = text.split("\n")
-            text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
-            text = text.strip()
-
-        normalized = self._normalize_not_exist_text(text)
-        if normalized:
-            return AssistantPayload(message=normalized)
-        
+    async def _run_agent(
+        self,
+        agent,
+        prompt: str,
+        agent_context: AgentContext,
+        session: SQLiteSession,
+    ) -> AssistantPayload:
+        """Invoke Runner.run under a turn cap and wall-clock timeout."""
+        timeout = self.settings.llm.request_timeout_seconds
         try:
-            data = json.loads(text)
-            citations = data.get("citations")
-            if citations:
-                sanitized_citations = []
-                for cit in citations:
-                    if isinstance(cit, dict):
-                        title = cit.get("title", "Link")
-                        url = cit.get("url", "#")
-                        sanitized_citations.append(f"[{title}]({url})")
-                    elif isinstance(cit, str):
-                        sanitized_citations.append(cit)
-                citations = sanitized_citations
-
-            raw_message = data.get("message", text)
-            if isinstance(raw_message, (dict, list)):
-                message = self._format_to_markdown(raw_message)
-            else:
-                message = str(raw_message) if raw_message is not None else ""
-            normalized_msg = self._normalize_not_exist_text(message)
-            if normalized_msg:
-                message = normalized_msg
-
-            return AssistantPayload(
-                message=message,
-                title=data.get("title"),
-                summary=data.get("summary"),
-                filters=[Filter(**f) for f in data.get("filters", []) if f] if data.get("filters") else None,
-                actions=[Action(**a) for a in data.get("actions", []) if a] if data.get("actions") else None,
-                citations=citations or None,
+            result = await asyncio.wait_for(
+                Runner.run(
+                    agent,
+                    prompt,
+                    context=agent_context,
+                    session=session,
+                    max_turns=self.settings.llm.max_turns,
+                ),
+                timeout=timeout,
             )
-        except json.JSONDecodeError:
-            return AssistantPayload(message=text)
-
-    def _format_to_markdown(self, data: Any, level: int = 0) -> str:
-        """Recursively convert structured data to readable Markdown."""
-        indent = "  " * level
-        if isinstance(data, dict):
-            lines = []
-            for key, value in data.items():
-                clean_key = key.replace("_", " ").title()
-                formatted_value = self._format_to_markdown(value, level + 1)
-                
-                if isinstance(value, (dict, list)) and value:
-                    lines.append(f"{indent}- **{clean_key}**:\n{formatted_value}")
-                else:
-                    lines.append(f"{indent}- **{clean_key}**: {formatted_value.strip()}")
-            return "\n".join(lines)
-        
-        elif isinstance(data, list):
-            lines = []
-            for item in data:
-                formatted_item = self._format_to_markdown(item, level + 1)
-                lines.append(f"{indent}- {formatted_item.strip()}")
-            return "\n".join(lines)
-        
-        else:
-            return str(data)
+        except asyncio.TimeoutError as exc:
+            raise HTTPException(
+                status_code=504,
+                detail=f"Assistant exceeded {timeout:.0f}s timeout.",
+            ) from exc
+        return result.final_output_as(AssistantPayload)
 
     def _compose_instructions(self, context: Dict[str, Any]) -> str:
         """Compose instructions with current dataset state."""

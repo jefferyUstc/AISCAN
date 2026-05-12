@@ -28,6 +28,8 @@ class LLMSettings(BaseModel):
     reasoning_effort: Optional[Literal["minimal", "low", "medium", "high"]] = "medium"
     verbosity: Optional[Literal["low", "medium", "high"]] = None
     max_conversation_history: int = 10
+    max_turns: int = 8
+    request_timeout_seconds: float = 120.0
 
 
 class EmbeddingSettings(BaseModel):
@@ -79,6 +81,9 @@ class APISettings(BaseModel):
     version: str = "0.2.0"
     cors_origins: List[str] = ["*"]
     log_level: str = "INFO"
+    # When True, the openai-agents SDK uploads traces (prompts, tool calls,
+    # outputs) to OpenAI's hosted dashboard. Disable for data-sensitive runs.
+    tracing_enabled: bool = True
 
 
 class Settings(BaseSettings):

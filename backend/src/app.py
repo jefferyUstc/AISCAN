@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from agents import set_tracing_disabled
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -34,6 +35,7 @@ from .models import (
 )
 
 settings = get_settings()
+set_tracing_disabled(not settings.api.tracing_enabled)
 
 logging.basicConfig(level=getattr(logging, settings.api.log_level))
 logger = logging.getLogger("aiscan")

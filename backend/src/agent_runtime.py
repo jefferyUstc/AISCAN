@@ -22,42 +22,49 @@ from .toolsets import (
 __all__ = ["AgentContext", "AssistantPayload", "build_base_agent", "BASE_INSTRUCTIONS"]
 
 
-BASE_INSTRUCTIONS = (
-    "You are an assistant to help explore the single-cell data and the related paper (in the knowledge base). "
-    "Tools - Only use when NECESSARY: "
-    "- search_knowledge_base(): First priority tool, use when user ask something about THIS dataset or the related paper. "
-    "- web_search(): when user explicitly asks or fails to find the answer in the knowledge base. "
-    "- resolve_filters(): Use this to VERIFY filters before adding them to your response."
-    "  STEP 1: Check the 'Cell Metadata (obs)' section in context to see valid dimensions (columns) and values/categories."
-    "  STEP 2: Based on user prompt, decide which dimension and value matches (e.g. User: 'Show treated', Context has 'condition' with 'treated', so Candidate: dimension='condition', value='treated')."
-    "  STEP 3: Call resolve_filters(candidates=[{'dimension': '...', 'value': '...'}]) to check if they are valid."
-    "  STEP 4: Include the VERIFIED filters returned by the tool in your final JSON response."
-    "- resolve_gene(): Use this to VERIFY a gene exists in adata.var_names before instructing the UI to display it."
-    "  STEP 1: Decide the candidate gene symbol/name from user prompt (e.g. 'color by RELN' => candidate 'RELN')."
-    "  STEP 2: Call resolve_gene(candidates=['RELN']) to verify existence."
-    "  STEP 3: If NOT found, respond EXACTLY: Gene: XXX  not exist (match spacing), and do NOT return actions."
-    "  STEP 4: If found, include actions like:"
-    "    actions=[{'type':'set_color_mode','value':'gene'},{'type':'set_gene','value':'RELN'}]"
-    "- resolve_embedding(): Use this to VERIFY an embedding exists before switching the visualization."
-    "  STEP 1: Check the 'Available embeddings' in context."
-    "  STEP 2: If the user asks to switch embeddings (e.g. 'switch to tsne', 'use tSNE', 'show UMAP'), you MUST call resolve_embedding(candidates=[...]) to verify."
-    "  STEP 3: If NOT found, respond: Embedding: XXX not exist, and do NOT return actions."
-    "  STEP 4: If found, include actions like:"
-    "    actions=[{'type':'set_embedding','value':'tsne'}]"
-    "CRITICAL: Always respond with a single valid JSON object, no markdown fences, no extra text. "
-    "Schema: {message: string, filters?: [{dimension: string, value: string}], actions?: [{type: string, value: string}], citations?: string[]}. "
-    "If you cannot produce filters, return an empty filters list and explain in message."
-)
+BASE_INSTRUCTIONS = """\
+You are an assistant helping the user explore a single-cell dataset and the
+related paper (indexed in the knowledge base).
+
+Tool guidance — call a tool only when it actually advances the answer.
+
+- search_knowledge_base(query): first choice whenever the user asks about
+  THIS dataset or the related paper.
+- web_search(query): use only when the user explicitly asks for external
+  sources, or the knowledge base lacks the answer.
+- resolve_filters(candidates): verify proposed filter dimension/value pairs
+  against the dataset before placing them in `filters`. Pull candidate
+  dimensions and values from the "Cell Metadata (obs)" section in context.
+- resolve_gene(candidates): verify gene symbols exist before emitting a
+  gene-display action. If not found, say so in `message` and emit no actions.
+  If found, emit actions=[{"type":"set_color_mode","value":"gene"},
+  {"type":"set_gene","value":"<gene>"}].
+- resolve_embedding(candidates): verify the embedding name (e.g. "umap",
+  "tsne") exists before switching. If not found, say so in `message` and
+  emit no actions. If found, emit actions=[{"type":"set_embedding",
+  "value":"<embedding>"}].
+
+Output is delivered as a structured object (AssistantPayload). Put your
+natural-language reply in `message`; leave `filters` / `actions` /
+`citations` empty when not applicable.
+"""
+
+
+class AssistantPayload(BaseModel):
+    """Schema the model fills in via OpenAI structured output."""
+    message: str
+    title: Optional[str] = None
+    summary: Optional[str] = None
+    filters: Optional[List[Filter]] = None
+    actions: Optional[List[Action]] = None
+    citations: Optional[List[str]] = None
 
 
 def build_base_agent(model_name: Optional[str] = None) -> Agent:
-    """Return the base Agent definition shared across requests.
-    
+    """Construct the shared base Agent for the assistant.
+
     Args:
-        model_name: Optional model name override. If None, uses config default.
-    
-    Returns:
-        Agent configured with specified or default settings.
+        model_name: Optional override; falls back to ``settings.llm.model_name``.
     """
     settings = get_settings()
     model = model_name or settings.llm.model_name
@@ -74,14 +81,5 @@ def build_base_agent(model_name: Optional[str] = None) -> Agent:
             verbosity=settings.llm.verbosity,
         ),
         tools=[resolve_filters, resolve_gene, resolve_embedding, search_knowledge_base, web_search],
+        output_type=AssistantPayload,
     )
-
-
-class AssistantPayload(BaseModel):
-    """Payload structure for assistant responses."""
-    message: str
-    title: Optional[str] = None
-    summary: Optional[str] = None
-    filters: Optional[List[Filter]] = None
-    actions: Optional[List[Action]] = None
-    citations: Optional[List[str]] = None

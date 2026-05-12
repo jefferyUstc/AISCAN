@@ -13,10 +13,7 @@ def setup_backend(project_root):
     if not backend_dir.exists():
         print(f"Backend directory not found: {backend_dir}")
         sys.exit(1)
-    
-    # Disable OpenAI Agents tracing to reduce network overhead
-    os.environ["OPENAI_AGENTS_DISABLE_TRACING"] = "1"
-    
+
     # Ensure ChEMBL MCP server is built
     chembl_server_dir = backend_dir / "mcp-servers" / "chembl-mcp-server"
     chembl_build_idx = chembl_server_dir / "build" / "index.js"
