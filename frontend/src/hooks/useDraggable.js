@@ -48,6 +48,10 @@ export function useDraggable({ initialX = 16, initialY = 16, containerRef, dragT
         setIsDragging(false);
     }, []);
 
+    // Stable getter so callers read the latest drag flag inside event handlers
+    // (after render) instead of snapshotting the ref value during render.
+    const getHasDragged = useCallback(() => hasDraggedRef.current, []);
+
     useEffect(() => {
         if (isDragging) {
             window.addEventListener('mousemove', handleDragMove);
@@ -66,7 +70,7 @@ export function useDraggable({ initialX = 16, initialY = 16, containerRef, dragT
     return {
         position,
         isDragging,
-        hasDragged: hasDraggedRef.current,
+        getHasDragged,
         handleDragStart,
     };
 }

@@ -52,32 +52,15 @@ function MarkdownCode({ inline, className, children, ...props }) {
   );
 }
 
+// Resolves to whether the copy succeeded so the button can show feedback.
+// The Async Clipboard API is available in every browser this app targets, so
+// the legacy execCommand path is not worth its complexity.
 function copyToClipboard(text) {
-  if (!text) return Promise.resolve(false);
-
-  if (navigator?.clipboard?.writeText) {
-    return navigator.clipboard
-      .writeText(text)
-      .then(() => true)
-      .catch(() => false);
-  }
-
-  try {
-    const textarea = document.createElement("textarea");
-    textarea.value = text;
-    textarea.setAttribute("readonly", "");
-    textarea.style.position = "fixed";
-    textarea.style.top = "-1000px";
-    textarea.style.left = "-1000px";
-    document.body.appendChild(textarea);
-    textarea.focus();
-    textarea.select();
-    const ok = document.execCommand("copy");
-    document.body.removeChild(textarea);
-    return Promise.resolve(ok);
-  } catch {
-    return Promise.resolve(false);
-  }
+  if (!text || !navigator?.clipboard?.writeText) return Promise.resolve(false);
+  return navigator.clipboard
+    .writeText(text)
+    .then(() => true)
+    .catch(() => false);
 }
 
 function CodeBlockPre({ children }) {
@@ -117,7 +100,7 @@ function CodeBlockPre({ children }) {
   );
 }
 
-export default function MarkdownMessage({ content, className }) {
+export default function MarkdownMessage({ content = "", className = "" }) {
   const components = useMemo(
     () => ({
       a: SafeLink,
@@ -139,10 +122,5 @@ export default function MarkdownMessage({ content, className }) {
 MarkdownMessage.propTypes = {
   content: PropTypes.string,
   className: PropTypes.string,
-};
-
-MarkdownMessage.defaultProps = {
-  content: "",
-  className: "",
 };
 

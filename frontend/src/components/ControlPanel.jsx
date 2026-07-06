@@ -1,58 +1,50 @@
 import PropTypes from "prop-types";
 import { useState } from "react";
-import { PALETTE, COLOR_SCALES } from "../utils/colors";
-
-
+import { COLOR_SCALES } from "../utils/colors";
+import { rgbArrayToHex } from "../utils/color-format.js";
+import { resolveCategoryColor } from "../utils/colorScale.js";
+import { useViz } from "../state/VizContext.jsx";
 
 export default function ControlPanel({
-  embeddings,
-  selectedEmbedding,
+  embeddings = [],
+  selectedEmbedding = null,
   onSelectEmbedding,
-  obsAttributes,
-  colorMode,
-  onColorModeChange,
-  selectedObs,
+  obsAttributes = [],
+  selectedObs = null,
   onSelectObs,
-  geneInput,
-  onGeneInputChange,
-  onApplyGene,
-  activeGene,
-  geneOptions,
-  sampleFraction,
-  onSampleFractionChange,
-  pointSize,
-  onPointSizeChange,
-  pointOpacity,
-  onPointOpacityChange,
-  pointEdgeWidth,
-  onPointEdgeWidthChange,
-  pointEdgeColor,
-  onPointEdgeColorChange,
-  categories,
-  visibleCategories,
-  onVisibleCategoriesChange,
-  customCategoryColors,
-  defaultCategoryColors,
-  onCustomCategoryColorChange,
-  dataset,
-  selectedIds,
-  onDownloadSelection,
-  selectedPointScale,
-  onSelectedPointScaleChange,
-  unselectedPointScale,
-  onUnselectedPointScaleChange,
-  colorScaleName,
-  onColorScaleChange,
-  colorRangeMin,
-  colorRangeMax,
-  onColorRangeChange,
-  onResetColorRange,
-  isContinuousMode,
-  dataValueRange,
+  geneOptions = [],
+  categories = [],
+  visibleCategories = null,
+  defaultCategoryColors = {},
+  dataset = null,
+  onDownloadSelection = () => {},
+  isContinuousMode = false,
+  dataValueRange = { min: null, max: null },
 }) {
-  // Local state for color range inputs
+  const { state: viz, actions } = useViz();
+  const {
+    colorMode,
+    geneInput,
+    activeGene,
+    sampleFraction,
+    pointSize,
+    pointOpacity,
+    pointEdgeWidth,
+    pointEdgeColor,
+    customCategoryColors,
+    selectedIds,
+    selectedPointScale,
+    unselectedPointScale,
+    colorScaleName,
+    colorRangeMin,
+    colorRangeMax,
+  } = viz;
+
+  // Local buffers for the color-range number inputs so typing does not commit
+  // on every keystroke.
   const [localMin, setLocalMin] = useState("");
   const [localMax, setLocalMax] = useState("");
+
   const formatNumber = (value) => {
     if (typeof value !== "number" || Number.isNaN(value)) return "—";
     if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
@@ -60,21 +52,20 @@ export default function ControlPanel({
     return value.toLocaleString();
   };
 
-  const handleModeChange = (mode) => () => {
-    onColorModeChange(mode);
-  };
-
   const handleGeneSelect = (event) => {
     const value = event.target.value || "";
-    onGeneInputChange(value);
-    if (value) {
-      onApplyGene(value);
-    }
+    actions.setGeneInput(value);
+    if (value) actions.applyGene(value);
   };
 
   const handleGeneSubmit = (event) => {
     event.preventDefault();
-    onApplyGene();
+    actions.applyGene(geneInput);
+  };
+
+  const handleVisibleCategoriesChange = (nextVisible) => {
+    if (!selectedObs) return;
+    actions.setVisibleCategories(selectedObs, nextVisible);
   };
 
   const datasetName = dataset?.name || "Dataset";
@@ -86,7 +77,9 @@ export default function ControlPanel({
   const continuousAttributes = obsAttributes.filter((attribute) => attribute.kind === "numeric");
   const categoricalAttributes = obsAttributes.filter((attribute) => attribute.kind !== "numeric");
   const samplingPercent = Math.round((sampleFraction || 0) * 100);
-  const normalizedCategories = Array.isArray(categories) ? categories.filter(Boolean).map(String) : [];
+  const normalizedCategories = Array.isArray(categories)
+    ? categories.filter(Boolean).map(String)
+    : [];
   const visibleSet =
     visibleCategories === null || visibleCategories === undefined
       ? null
@@ -135,14 +128,14 @@ export default function ControlPanel({
           <button
             type="button"
             className={colorMode === "obs" ? "active" : ""}
-            onClick={handleModeChange("obs")}
+            onClick={() => actions.setColorMode("obs")}
           >
             Attributes
           </button>
           <button
             type="button"
             className={colorMode === "gene" ? "active" : ""}
-            onClick={handleModeChange("gene")}
+            onClick={() => actions.setColorMode("gene")}
           >
             Genes
           </button>
@@ -203,7 +196,10 @@ export default function ControlPanel({
               <option value="">Select a feature</option>
               {geneOptions.map((gene) => {
                 const primary = gene.symbol || gene.name;
-                const secondary = gene.symbol && gene.symbol !== gene.name ? gene.name : gene.metadata?.metabolites;
+                const secondary =
+                  gene.symbol && gene.symbol !== gene.name
+                    ? gene.name
+                    : gene.metadata?.metabolites;
                 const label = secondary ? `${primary} — ${secondary}` : primary;
                 return (
                   <option key={gene.id} value={primary}>
@@ -234,7 +230,7 @@ export default function ControlPanel({
               max="1"
               step="0.05"
               value={sampleFraction}
-              onChange={(event) => onSampleFractionChange(parseFloat(event.target.value))}
+              onChange={(event) => actions.setSampleFraction(parseFloat(event.target.value))}
             />
           </div>
         </div>
@@ -250,7 +246,7 @@ export default function ControlPanel({
               max="10"
               step="1"
               value={pointSize}
-              onChange={(event) => onPointSizeChange(parseInt(event.target.value, 10))}
+              onChange={(event) => actions.setPointSize(parseInt(event.target.value, 10))}
             />
           </div>
           <div className="field slider-field">
@@ -262,7 +258,7 @@ export default function ControlPanel({
               max="1"
               step="0.1"
               value={pointOpacity}
-              onChange={(event) => onPointOpacityChange(parseFloat(event.target.value))}
+              onChange={(event) => actions.setPointOpacity(parseFloat(event.target.value))}
             />
           </div>
         </div>
@@ -278,7 +274,7 @@ export default function ControlPanel({
               max="2"
               step="0.1"
               value={pointEdgeWidth}
-              onChange={(event) => onPointEdgeWidthChange(parseFloat(event.target.value))}
+              onChange={(event) => actions.setPointEdgeWidth(parseFloat(event.target.value))}
             />
           </div>
           <div className="field color-field-row">
@@ -288,7 +284,7 @@ export default function ControlPanel({
                 id="point-edge-color"
                 type="color"
                 value={pointEdgeColor}
-                onChange={(event) => onPointEdgeColorChange(event.target.value)}
+                onChange={(event) => actions.setPointEdgeColor(event.target.value)}
               />
               <span className="color-value">{pointEdgeColor}</span>
             </div>
@@ -303,11 +299,13 @@ export default function ControlPanel({
               <select
                 id="colormap-select"
                 value={colorScaleName}
-                onChange={(e) => onColorScaleChange(e.target.value)}
+                onChange={(event) => actions.setColorScaleName(event.target.value)}
                 className="colormap-select"
               >
                 {Object.entries(COLOR_SCALES).map(([key, { name }]) => (
-                  <option key={key} value={key}>{name}</option>
+                  <option key={key} value={key}>
+                    {name}
+                  </option>
                 ))}
               </select>
             </div>
@@ -319,23 +317,26 @@ export default function ControlPanel({
                   type="number"
                   step="0.1"
                   placeholder={dataValueRange?.min !== null ? dataValueRange.min.toFixed(2) : "auto"}
-                  value={localMin || (colorRangeMin !== null ? colorRangeMin : (dataValueRange?.min !== null ? dataValueRange.min.toFixed(2) : ""))}
-                  onChange={(e) => setLocalMin(e.target.value)}
-                  onBlur={(e) => {
-                    const val = parseFloat(e.target.value);
-                    if (!isNaN(val)) {
-                      onColorRangeChange(val, colorRangeMax);
-                    }
+                  value={
+                    localMin ||
+                    (colorRangeMin !== null
+                      ? colorRangeMin
+                      : dataValueRange?.min !== null
+                        ? dataValueRange.min.toFixed(2)
+                        : "")
+                  }
+                  onChange={(event) => setLocalMin(event.target.value)}
+                  onBlur={(event) => {
+                    const val = parseFloat(event.target.value);
+                    if (!Number.isNaN(val)) actions.setColorRange(val, colorRangeMax);
                     setLocalMin("");
                   }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      const val = parseFloat(e.target.value);
-                      if (!isNaN(val)) {
-                        onColorRangeChange(val, colorRangeMax);
-                      }
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      const val = parseFloat(event.target.value);
+                      if (!Number.isNaN(val)) actions.setColorRange(val, colorRangeMax);
                       setLocalMin("");
-                      e.target.blur();
+                      event.target.blur();
                     }
                   }}
                 />
@@ -347,33 +348,32 @@ export default function ControlPanel({
                   type="number"
                   step="0.1"
                   placeholder={dataValueRange?.max !== null ? dataValueRange.max.toFixed(2) : "auto"}
-                  value={localMax || (colorRangeMax !== null ? colorRangeMax : (dataValueRange?.max !== null ? dataValueRange.max.toFixed(2) : ""))}
-                  onChange={(e) => setLocalMax(e.target.value)}
-                  onBlur={(e) => {
-                    const val = parseFloat(e.target.value);
-                    if (!isNaN(val)) {
-                      onColorRangeChange(colorRangeMin, val);
-                    }
+                  value={
+                    localMax ||
+                    (colorRangeMax !== null
+                      ? colorRangeMax
+                      : dataValueRange?.max !== null
+                        ? dataValueRange.max.toFixed(2)
+                        : "")
+                  }
+                  onChange={(event) => setLocalMax(event.target.value)}
+                  onBlur={(event) => {
+                    const val = parseFloat(event.target.value);
+                    if (!Number.isNaN(val)) actions.setColorRange(colorRangeMin, val);
                     setLocalMax("");
                   }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      const val = parseFloat(e.target.value);
-                      if (!isNaN(val)) {
-                        onColorRangeChange(colorRangeMin, val);
-                      }
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      const val = parseFloat(event.target.value);
+                      if (!Number.isNaN(val)) actions.setColorRange(colorRangeMin, val);
                       setLocalMax("");
-                      e.target.blur();
+                      event.target.blur();
                     }
                   }}
                 />
               </div>
             </div>
-            <button
-              type="button"
-              className="reset-range-btn"
-              onClick={onResetColorRange}
-            >
+            <button type="button" className="reset-range-btn" onClick={actions.resetColorRange}>
               Reset Range
             </button>
           </div>
@@ -382,84 +382,73 @@ export default function ControlPanel({
         {categories && categories.length > 0 && (
           <div className="control-section category-section">
             <div className="section-label">Category Colors</div>
-            {typeof onVisibleCategoriesChange === "function" ? (
-              <div className="category-toolbar">
-                <button
-                  type="button"
-                  className="small-btn"
-                  onClick={() => onVisibleCategoriesChange(null)}
-                  title="Show all categories"
-                >
-                  Show all
-                </button>
-                <button
-                  type="button"
-                  className="small-btn danger"
-                  onClick={() => onVisibleCategoriesChange([])}
-                  title="Hide all categories"
-                >
-                  Hide all
-                </button>
-              </div>
-            ) : null}
+            <div className="category-toolbar">
+              <button
+                type="button"
+                className="small-btn"
+                onClick={() => handleVisibleCategoriesChange(null)}
+                title="Show all categories"
+              >
+                Show all
+              </button>
+              <button
+                type="button"
+                className="small-btn danger"
+                onClick={() => handleVisibleCategoriesChange([])}
+                title="Hide all categories"
+              >
+                Hide all
+              </button>
+            </div>
             <div className="category-list">
               {categories.map((cat, index) => {
                 const catLabel = String(cat);
-                const defaultColor = PALETTE[index % PALETTE.length];
-                const hexDefault = `#${defaultColor[0].toString(16).padStart(2, '0')}${defaultColor[1].toString(16).padStart(2, '0')}${defaultColor[2].toString(16).padStart(2, '0')}`;
-
-                const backendColor = defaultCategoryColors?.[catLabel];
-                const baseColor = backendColor || hexDefault;
-                const currentColor = customCategoryColors[catLabel] || baseColor;
+                const currentColor = rgbArrayToHex(
+                  resolveCategoryColor(catLabel, index, customCategoryColors, defaultCategoryColors)
+                );
                 const checked = visibleSet ? visibleSet.has(catLabel) : true;
 
                 return (
                   <div key={catLabel} className="category-item">
-                    {typeof onVisibleCategoriesChange === "function" ? (
-                      <div className="category-visibility-toggle">
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={(e) => {
-                            const isChecked = e.target.checked;
-                            if (!normalizedCategories.length) return;
-                            const nextAll = normalizedCategories;
-                            let nextVisible;
-                            if (visibleSet === null) {
-                              // Start from "all visible" and remove one.
-                              nextVisible = new Set(nextAll);
-                            } else {
-                              nextVisible = new Set(visibleSet);
-                            }
-                            if (isChecked) {
-                              nextVisible.add(catLabel);
-                            } else {
-                              nextVisible.delete(catLabel);
-                            }
-                            // If all visible, store null to represent "no filtering".
-                            if (nextVisible.size === nextAll.length) {
-                              onVisibleCategoriesChange(null);
-                              return;
-                            }
-                            onVisibleCategoriesChange(Array.from(nextVisible));
-                          }}
-                          aria-label={`Toggle category ${catLabel}`}
-                        />
-                      </div>
-                    ) : null}
+                    <div className="category-visibility-toggle">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={(event) => {
+                          if (!normalizedCategories.length) return;
+                          const nextVisible =
+                            visibleSet === null
+                              ? new Set(normalizedCategories)
+                              : new Set(visibleSet);
+                          if (event.target.checked) {
+                            nextVisible.add(catLabel);
+                          } else {
+                            nextVisible.delete(catLabel);
+                          }
+                          if (nextVisible.size === normalizedCategories.length) {
+                            handleVisibleCategoriesChange(null);
+                            return;
+                          }
+                          handleVisibleCategoriesChange(Array.from(nextVisible));
+                        }}
+                        aria-label={`Toggle category ${catLabel}`}
+                      />
+                    </div>
                     <div className="category-color-picker">
                       <input
                         type="color"
                         value={currentColor}
-                        onChange={(e) => {
-                          onCustomCategoryColorChange({
+                        onChange={(event) =>
+                          actions.setCustomCategoryColors({
                             ...customCategoryColors,
-                            [catLabel]: e.target.value
-                          });
-                        }}
+                            [catLabel]: event.target.value,
+                          })
+                        }
                       />
                     </div>
-                    <span className="category-label" title={catLabel}>{catLabel}</span>
+                    <span className="category-label" title={catLabel}>
+                      {catLabel}
+                    </span>
                   </div>
                 );
               })}
@@ -472,7 +461,9 @@ export default function ControlPanel({
         <div className="sidebar-subtitle">Cell selection</div>
         <div className="selection-content">
           {selectedIds.length === 0 ? (
-            <div className="empty-state">No cells selected. Use the lasso tool to choose cells.</div>
+            <div className="empty-state">
+              No cells selected. Use the lasso tool to choose cells.
+            </div>
           ) : (
             <div className="selection-info">
               <div className="selection-count">
@@ -495,7 +486,9 @@ export default function ControlPanel({
         <div className="control-section point-scale-section">
           <div className="section-label">Point Size Scale</div>
           <div className="field slider-field">
-            <label htmlFor="selected-point-scale">Selected {Math.round(selectedPointScale * 100)}%</label>
+            <label htmlFor="selected-point-scale">
+              Selected {Math.round(selectedPointScale * 100)}%
+            </label>
             <input
               id="selected-point-scale"
               type="range"
@@ -503,11 +496,13 @@ export default function ControlPanel({
               max="3"
               step="0.1"
               value={selectedPointScale}
-              onChange={(event) => onSelectedPointScaleChange(parseFloat(event.target.value))}
+              onChange={(event) => actions.setSelectedPointScale(parseFloat(event.target.value))}
             />
           </div>
           <div className="field slider-field">
-            <label htmlFor="unselected-point-scale">Unselected {Math.round(unselectedPointScale * 100)}%</label>
+            <label htmlFor="unselected-point-scale">
+              Unselected {Math.round(unselectedPointScale * 100)}%
+            </label>
             <input
               id="unselected-point-scale"
               type="range"
@@ -515,7 +510,7 @@ export default function ControlPanel({
               max="3"
               step="0.1"
               value={unselectedPointScale}
-              onChange={(event) => onUnselectedPointScaleChange(parseFloat(event.target.value))}
+              onChange={(event) => actions.setUnselectedPointScale(parseFloat(event.target.value))}
             />
           </div>
         </div>
@@ -537,20 +532,12 @@ ControlPanel.propTypes = {
   obsAttributes: PropTypes.arrayOf(
     PropTypes.shape({
       name: PropTypes.string.isRequired,
-      label: PropTypes.string.isRequired,
+      label: PropTypes.string,
       kind: PropTypes.string,
-      dtype: PropTypes.string,
-      cardinality: PropTypes.number,
     })
   ),
-  colorMode: PropTypes.oneOf(["obs", "gene"]).isRequired,
-  onColorModeChange: PropTypes.func.isRequired,
   selectedObs: PropTypes.string,
   onSelectObs: PropTypes.func.isRequired,
-  geneInput: PropTypes.string.isRequired,
-  onGeneInputChange: PropTypes.func.isRequired,
-  onApplyGene: PropTypes.func.isRequired,
-  activeGene: PropTypes.string,
   geneOptions: PropTypes.arrayOf(
     PropTypes.shape({
       id: PropTypes.string.isRequired,
@@ -559,81 +546,21 @@ ControlPanel.propTypes = {
       metadata: PropTypes.object,
     })
   ),
-  sampleFraction: PropTypes.number.isRequired,
-  onSampleFractionChange: PropTypes.func,
-  pointSize: PropTypes.number.isRequired,
-  onPointSizeChange: PropTypes.func.isRequired,
-  pointOpacity: PropTypes.number,
-  onPointOpacityChange: PropTypes.func,
-  pointEdgeWidth: PropTypes.number,
-  onPointEdgeWidthChange: PropTypes.func,
-  pointEdgeColor: PropTypes.string,
-  onPointEdgeColorChange: PropTypes.func,
   categories: PropTypes.arrayOf(PropTypes.string),
-  visibleCategories: PropTypes.oneOfType([PropTypes.arrayOf(PropTypes.string), PropTypes.oneOf([null])]),
-  onVisibleCategoriesChange: PropTypes.func,
-  customCategoryColors: PropTypes.object,
+  visibleCategories: PropTypes.oneOfType([
+    PropTypes.arrayOf(PropTypes.string),
+    PropTypes.oneOf([null]),
+  ]),
   defaultCategoryColors: PropTypes.object,
-  onCustomCategoryColorChange: PropTypes.func,
   dataset: PropTypes.shape({
     name: PropTypes.string,
     cellCount: PropTypes.number,
     geneCount: PropTypes.number,
   }),
-  selectedIds: PropTypes.arrayOf(PropTypes.string),
   onDownloadSelection: PropTypes.func,
-  selectedPointScale: PropTypes.number,
-  onSelectedPointScaleChange: PropTypes.func,
-  unselectedPointScale: PropTypes.number,
-  onUnselectedPointScaleChange: PropTypes.func,
-  colorScaleName: PropTypes.string,
-  onColorScaleChange: PropTypes.func,
-  colorRangeMin: PropTypes.number,
-  colorRangeMax: PropTypes.number,
-  onColorRangeChange: PropTypes.func,
-  onResetColorRange: PropTypes.func,
   isContinuousMode: PropTypes.bool,
   dataValueRange: PropTypes.shape({
     min: PropTypes.number,
     max: PropTypes.number,
   }),
-};
-
-ControlPanel.defaultProps = {
-  embeddings: [],
-  selectedEmbedding: null,
-  obsAttributes: [],
-  selectedObs: null,
-  activeGene: "",
-  geneOptions: [],
-  sampleFraction: 0.25,
-  onSampleFractionChange: () => { },
-  pointSize: 4,
-  pointOpacity: 1.0,
-  onPointOpacityChange: () => { },
-  pointEdgeWidth: 0,
-  onPointEdgeWidthChange: () => { },
-  pointEdgeColor: "#000000",
-  onPointEdgeColorChange: () => { },
-  categories: [],
-  visibleCategories: null,
-  onVisibleCategoriesChange: null,
-  customCategoryColors: {},
-  defaultCategoryColors: {},
-  onCustomCategoryColorChange: () => { },
-  dataset: null,
-  selectedIds: [],
-  onDownloadSelection: () => { },
-  selectedPointScale: 1.0,
-  onSelectedPointScaleChange: () => { },
-  unselectedPointScale: 1.0,
-  onUnselectedPointScaleChange: () => { },
-  colorScaleName: "turbo",
-  onColorScaleChange: () => { },
-  colorRangeMin: null,
-  colorRangeMax: null,
-  onColorRangeChange: () => { },
-  onResetColorRange: () => { },
-  isContinuousMode: false,
-  dataValueRange: { min: null, max: null },
 };

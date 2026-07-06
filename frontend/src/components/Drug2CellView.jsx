@@ -1,8 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
-import Plot from 'react-plotly.js';
-import Plotly from 'plotly.js-dist-min';
-
-const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
+import { apiGet, apiPost } from '../api/client.js';
+import Plot from '../plots/plotly.js';
+import SaveButton, { savePlotSvg } from '../plots/SaveButton.jsx';
 
 // Minimal common layout for plots
 const COMMON_LAYOUT = {
@@ -23,48 +22,6 @@ const COMMON_LAYOUT = {
         title: { font: { size: 11 } }
     }
 };
-
-const handleSavePlot = (ref, filename) => {
-    const el = ref?.current?.el || ref?.current;
-    if (!el) return;
-    const safeName = (filename || 'plot').replace(/[^\w.-]+/g, '_');
-    const width = el?.offsetWidth || undefined;
-    const height = el?.offsetHeight || undefined;
-    Plotly.downloadImage(el, {
-        format: 'svg',
-        filename: safeName,
-        width,
-        height,
-        scale: 5
-    }).catch(() => {
-        // ignore download errors (e.g. canvas tainted)
-    });
-};
-
-const SaveButton = ({ onClick }) => (
-    <button
-        type="button"
-        onClick={onClick}
-        style={{
-            padding: '2px 8px',
-            borderRadius: '4px',
-            border: '1px solid rgba(148, 163, 184, 0.4)',
-            backgroundColor: 'transparent',
-            color: '#94a3b8',
-            fontSize: '0.7rem',
-            cursor: 'pointer',
-            marginLeft: '8px',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '4px'
-        }}
-        onMouseOver={e => { e.currentTarget.style.color = '#3b82f6'; e.currentTarget.style.borderColor = '#3b82f6'; }}
-        onMouseOut={e => { e.currentTarget.style.color = '#94a3b8'; e.currentTarget.style.borderColor = 'rgba(148, 163, 184, 0.4)'; }}
-        title="Save plot as SVG"
-    >
-        <span>📷 Save</span>
-    </button>
-);
 
 export default function Drug2CellView({ obsAttributes = [] }) {
     // Status state
@@ -103,19 +60,10 @@ export default function Drug2CellView({ obsAttributes = [] }) {
         }
     }, [categoricalAttributes, selectedGroupby]);
 
-    // Check status on mount
-    useEffect(() => {
-        fetchStatus();
-    }, []);
-
     const fetchStatus = async () => {
         setStatusLoading(true);
         try {
-            const res = await fetch(`${API_BASE}/api/dataset/drug2cell/status`);
-            if (res.ok) {
-                const data = await res.json();
-                setStatus(data);
-            }
+            setStatus(await apiGet('/api/dataset/drug2cell/status'));
         } catch (err) {
             console.error('Failed to fetch status:', err);
         } finally {
@@ -123,19 +71,20 @@ export default function Drug2CellView({ obsAttributes = [] }) {
         }
     };
 
+    // Check status on mount
+    useEffect(() => {
+        fetchStatus();
+    }, []);
+
     const handleCompute = async () => {
         if (!humanConfirmed) return;
 
         setComputing(true);
         try {
-            const params = new URLSearchParams({ use_raw: useRaw.toString() });
-            const res = await fetch(`${API_BASE}/api/dataset/drug2cell/compute?${params}`, {
-                method: 'POST'
+            const data = await apiPost('/api/dataset/drug2cell/compute', {
+                params: { use_raw: useRaw },
             });
-            if (res.ok) {
-                const data = await res.json();
-                setStatus(data);
-            }
+            setStatus(data);
         } catch (err) {
             console.error('Compute failed:', err);
         } finally {
@@ -151,19 +100,11 @@ export default function Drug2CellView({ obsAttributes = [] }) {
         setDotplotData(null);
 
         try {
-            const params = new URLSearchParams({
+            const data = await apiGet('/api/dataset/drug2cell/dotplot', {
                 groupby: selectedGroupby,
-                n_genes: nGenes.toString()
+                n_genes: nGenes,
+                split_by: selectedSplitBy || undefined,
             });
-            if (selectedSplitBy) {
-                params.append('split_by', selectedSplitBy);
-            }
-            const res = await fetch(`${API_BASE}/api/dataset/drug2cell/dotplot?${params}`);
-            if (!res.ok) {
-                const err = await res.json().catch(() => ({}));
-                throw new Error(err.detail || 'Failed to fetch dotplot');
-            }
-            const data = await res.json();
             setDotplotData(data);
         } catch (err) {
             setDotplotError(err.message);
@@ -200,79 +141,49 @@ export default function Drug2CellView({ obsAttributes = [] }) {
     }, [dotplotData, minMeanExpr, minFracExpr]);
 
     return (
-        <div className="layout-root" style={{ gap: '16px', padding: '16px' }}>
+        <div className="layout-root plot-view">
             {/* Left Column: Controls */}
-            <div className="sidebar-card" style={{ width: '350px', display: 'flex', flexDirection: 'column', minWidth: '300px', padding: '16px', gap: '16px', overflowY: 'auto', maxHeight: 'calc(100vh - 100px)' }}>
+            <div className="sidebar-card d2c-sidebar">
 
                 {/* Status Card */}
-                <div className="embedding-card" style={{ padding: '16px', flex: 'none' }}>
-                    <h3 style={{ margin: '0 0 12px 0', fontSize: '0.9rem', color: '#e2e8f0' }}>
-                        🧬 Drug2Cell Status
-                    </h3>
+                <div className="embedding-card plot-card">
+                    <h3 className="plot-card-title">🧬 Drug2Cell Status</h3>
 
                     {statusLoading ? (
-                        <div style={{ color: '#94a3b8', fontSize: '0.85rem' }}>Loading status...</div>
+                        <div className="plot-muted">Loading status...</div>
                     ) : (
-                        <div style={{
-                            padding: '10px 14px',
-                            borderRadius: '8px',
-                            backgroundColor: isReady ? 'rgba(16, 185, 129, 0.15)' : 'rgba(251, 191, 36, 0.15)',
-                            border: `1px solid ${isReady ? 'rgba(16, 185, 129, 0.3)' : 'rgba(251, 191, 36, 0.3)'}`,
-                            color: isReady ? '#10b981' : '#fbbf24',
-                            fontSize: '0.85rem'
-                        }}>
-                            <div style={{ fontWeight: 600, marginBottom: '4px' }}>
+                        <div className={`d2c-status ${isReady ? "d2c-status--ready" : "d2c-status--pending"}`}>
+                            <div className="d2c-status-title">
                                 {isReady ? '✓ Ready' : '○ Not Computed'}
                             </div>
-                            <div style={{ opacity: 0.8, fontSize: '0.8rem' }}>
-                                {status?.message}
-                            </div>
+                            <div className="d2c-status-msg">{status?.message}</div>
                         </div>
                     )}
                 </div>
 
                 {/* Compute Section */}
                 {!isReady && (
-                    <div className="embedding-card" style={{ padding: '16px', flex: 'none' }}>
-                        <h3 style={{ margin: '0 0 12px 0', fontSize: '0.9rem', color: '#e2e8f0' }}>
-                            Compute Drug Scores
-                        </h3>
+                    <div className="embedding-card plot-card">
+                        <h3 className="plot-card-title">Compute Drug Scores</h3>
 
                         {/* Human confirmation */}
-                        <label style={{
-                            display: 'flex',
-                            alignItems: 'flex-start',
-                            gap: '10px',
-                            marginBottom: '12px',
-                            cursor: 'pointer',
-                            fontSize: '0.85rem',
-                            color: '#cbd5e1'
-                        }}>
+                        <label className="d2c-check d2c-check--confirm">
                             <input
                                 type="checkbox"
                                 checked={humanConfirmed}
                                 onChange={(e) => setHumanConfirmed(e.target.checked)}
-                                style={{ marginTop: '3px' }}
                             />
                             <span>
                                 I confirm this is <strong>human</strong> gene expression data
                                 <br />
-                                <span style={{ fontSize: '0.75rem', color: '#94a3b8' }}>
+                                <span className="d2c-check-sub">
                                     Drug2Cell uses ChEMBL human drug targets
                                 </span>
                             </span>
                         </label>
 
                         {/* Use raw option */}
-                        <label style={{
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '10px',
-                            marginBottom: '16px',
-                            cursor: 'pointer',
-                            fontSize: '0.85rem',
-                            color: '#cbd5e1'
-                        }}>
+                        <label className="d2c-check">
                             <input
                                 type="checkbox"
                                 checked={useRaw}
@@ -282,20 +193,9 @@ export default function Drug2CellView({ obsAttributes = [] }) {
                         </label>
 
                         <button
+                            className="plot-btn plot-btn--success plot-btn--block"
                             onClick={handleCompute}
                             disabled={computing || !humanConfirmed}
-                            style={{
-                                width: '100%',
-                                padding: '10px 16px',
-                                borderRadius: '8px',
-                                border: 'none',
-                                backgroundColor: computing || !humanConfirmed ? '#475569' : '#10b981',
-                                color: '#fff',
-                                fontSize: '0.9rem',
-                                fontWeight: 600,
-                                cursor: computing || !humanConfirmed ? 'not-allowed' : 'pointer',
-                                transition: 'background-color 0.2s'
-                            }}
                         >
                             {computing ? '⏳ Computing...' : '🧬 Score Cells'}
                         </button>
@@ -304,28 +204,16 @@ export default function Drug2CellView({ obsAttributes = [] }) {
 
                 {/* Dotplot Controls */}
                 {isReady && (
-                    <div className="embedding-card" style={{ padding: '16px', flex: 'none' }}>
-                        <h3 style={{ margin: '0 0 12px 0', fontSize: '0.9rem', color: '#e2e8f0' }}>
-                            Group-Specific Drugs
-                        </h3>
+                    <div className="embedding-card plot-card">
+                        <h3 className="plot-card-title">Group-Specific Drugs</h3>
 
                         {/* Groupby selector */}
-                        <div style={{ marginBottom: '12px' }}>
-                            <label style={{ display: 'block', fontSize: '0.75rem', color: '#94a3b8', marginBottom: '6px' }}>
-                                Group By
-                            </label>
+                        <div className="d2c-field">
+                            <label className="d2c-label">Group By</label>
                             <select
+                                className="d2c-select"
                                 value={selectedGroupby}
                                 onChange={(e) => setSelectedGroupby(e.target.value)}
-                                style={{
-                                    width: '100%',
-                                    padding: '8px 12px',
-                                    borderRadius: '6px',
-                                    border: '1px solid rgba(148, 163, 184, 0.3)',
-                                    backgroundColor: 'rgba(15, 23, 42, 0.6)',
-                                    color: '#e2e8f0',
-                                    fontSize: '0.85rem'
-                                }}
                             >
                                 {categoricalAttributes.map(attr => (
                                     <option key={attr.name} value={attr.name}>{attr.name}</option>
@@ -334,22 +222,14 @@ export default function Drug2CellView({ obsAttributes = [] }) {
                         </div>
 
                         {/* Split By selector (visualization only) */}
-                        <div style={{ marginBottom: '12px' }}>
-                            <label style={{ display: 'block', fontSize: '0.75rem', color: '#94a3b8', marginBottom: '6px' }}>
-                                Split By <span style={{ opacity: 0.6 }}>(optional)</span>
+                        <div className="d2c-field">
+                            <label className="d2c-label">
+                                Split By <span className="text-dim">(optional)</span>
                             </label>
                             <select
+                                className="d2c-select"
                                 value={selectedSplitBy}
                                 onChange={(e) => setSelectedSplitBy(e.target.value)}
-                                style={{
-                                    width: '100%',
-                                    padding: '8px 12px',
-                                    borderRadius: '6px',
-                                    border: '1px solid rgba(148, 163, 184, 0.3)',
-                                    backgroundColor: 'rgba(15, 23, 42, 0.6)',
-                                    color: '#e2e8f0',
-                                    fontSize: '0.85rem'
-                                }}
                             >
                                 <option value="">None</option>
                                 {categoricalAttributes
@@ -361,22 +241,12 @@ export default function Drug2CellView({ obsAttributes = [] }) {
                         </div>
 
                         {/* N genes selector */}
-                        <div style={{ marginBottom: '16px' }}>
-                            <label style={{ display: 'block', fontSize: '0.75rem', color: '#94a3b8', marginBottom: '6px' }}>
-                                Top Drugs per Group
-                            </label>
+                        <div className="d2c-field--last">
+                            <label className="d2c-label">Top Drugs per Group</label>
                             <select
+                                className="d2c-select"
                                 value={nGenes}
                                 onChange={(e) => setNGenes(Number(e.target.value))}
-                                style={{
-                                    width: '100%',
-                                    padding: '8px 12px',
-                                    borderRadius: '6px',
-                                    border: '1px solid rgba(148, 163, 184, 0.3)',
-                                    backgroundColor: 'rgba(15, 23, 42, 0.6)',
-                                    color: '#e2e8f0',
-                                    fontSize: '0.85rem'
-                                }}
                             >
                                 <option value={5}>5</option>
                                 <option value={10}>10</option>
@@ -386,19 +256,9 @@ export default function Drug2CellView({ obsAttributes = [] }) {
                         </div>
 
                         <button
+                            className="plot-btn plot-btn--accent plot-btn--block"
                             onClick={handleFetchDotplot}
                             disabled={dotplotLoading || !selectedGroupby}
-                            style={{
-                                width: '100%',
-                                padding: '10px 16px',
-                                borderRadius: '8px',
-                                border: 'none',
-                                backgroundColor: dotplotLoading ? '#475569' : '#3b82f6',
-                                color: '#fff',
-                                fontSize: '0.9rem',
-                                fontWeight: 600,
-                                cursor: dotplotLoading ? 'not-allowed' : 'pointer'
-                            }}
                         >
                             {dotplotLoading ? '⏳ Loading...' : '📊 Show Dotplot'}
                         </button>
@@ -407,14 +267,12 @@ export default function Drug2CellView({ obsAttributes = [] }) {
 
                 {/* Filter Controls - only show when dotplot is ready */}
                 {dotplotData && (
-                    <div className="embedding-card" style={{ padding: '16px', flex: 'none' }}>
-                        <h3 style={{ margin: '0 0 12px 0', fontSize: '0.9rem', color: '#e2e8f0' }}>
-                            🔍 Filter Drugs
-                        </h3>
+                    <div className="embedding-card plot-card">
+                        <h3 className="plot-card-title">🔍 Filter Drugs</h3>
 
                         {/* Min Mean Expression */}
-                        <div style={{ marginBottom: '12px' }}>
-                            <label style={{ display: 'block', fontSize: '0.75rem', color: '#94a3b8', marginBottom: '6px' }}>
+                        <div className="d2c-field">
+                            <label className="d2c-label">
                                 Min Mean Expression (all groups): {minMeanExpr.toFixed(2)}
                             </label>
                             <input
@@ -424,13 +282,13 @@ export default function Drug2CellView({ obsAttributes = [] }) {
                                 step="0.01"
                                 value={minMeanExpr}
                                 onChange={(e) => setMinMeanExpr(parseFloat(e.target.value))}
-                                style={{ width: '100%' }}
+                                className="full-width"
                             />
                         </div>
 
                         {/* Min Fraction Expressing */}
-                        <div style={{ marginBottom: '8px' }}>
-                            <label style={{ display: 'block', fontSize: '0.75rem', color: '#94a3b8', marginBottom: '6px' }}>
+                        <div className="d2c-field">
+                            <label className="d2c-label">
                                 Min % Expressing (all groups): {(minFracExpr * 100).toFixed(0)}%
                             </label>
                             <input
@@ -440,11 +298,11 @@ export default function Drug2CellView({ obsAttributes = [] }) {
                                 step="0.01"
                                 value={minFracExpr}
                                 onChange={(e) => setMinFracExpr(parseFloat(e.target.value))}
-                                style={{ width: '100%' }}
+                                className="full-width"
                             />
                         </div>
 
-                        <div style={{ fontSize: '0.75rem', color: '#64748b', marginTop: '8px' }}>
+                        <div className="d2c-hint">
                             Drugs where max value across all groups is below threshold will be hidden
                         </div>
                     </div>
@@ -452,28 +310,16 @@ export default function Drug2CellView({ obsAttributes = [] }) {
 
                 {/* Filter Groups */}
                 {dotplotData && (
-                    <div className="embedding-card" style={{ padding: '16px', flex: 'none' }}>
-                        <h3 style={{ margin: '0 0 12px 0', fontSize: '0.9rem', color: '#e2e8f0' }}>
-                            📊 Filter Groups
-                        </h3>
-                        <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginBottom: '8px' }}>
+                    <div className="embedding-card plot-card">
+                        <h3 className="plot-card-title">📊 Filter Groups</h3>
+                        <div className="d2c-groups-count">
                             Select groups to display ({dotplotData.groups.length - hiddenGroups.size} of {dotplotData.groups.length} shown)
                         </div>
-                        <div style={{ maxHeight: '200px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                        <div className="d2c-groups-list">
                             {dotplotData.groups.map(group => (
                                 <label
                                     key={group}
-                                    style={{
-                                        display: 'flex',
-                                        alignItems: 'center',
-                                        gap: '8px',
-                                        cursor: 'pointer',
-                                        fontSize: '0.8rem',
-                                        color: hiddenGroups.has(group) ? '#64748b' : '#e2e8f0',
-                                        padding: '4px 8px',
-                                        borderRadius: '4px',
-                                        backgroundColor: hiddenGroups.has(group) ? 'transparent' : 'rgba(59, 130, 246, 0.1)'
-                                    }}
+                                    className={`d2c-group ${hiddenGroups.has(group) ? "d2c-group--hidden" : ""}`}
                                 >
                                     <input
                                         type="checkbox"
@@ -492,34 +338,16 @@ export default function Drug2CellView({ obsAttributes = [] }) {
                                 </label>
                             ))}
                         </div>
-                        <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
+                        <div className="d2c-group-actions">
                             <button
+                                className="d2c-group-btn d2c-group-btn--show"
                                 onClick={() => setHiddenGroups(new Set())}
-                                style={{
-                                    flex: 1,
-                                    padding: '6px',
-                                    fontSize: '0.75rem',
-                                    backgroundColor: 'rgba(59, 130, 246, 0.2)',
-                                    border: '1px solid rgba(59, 130, 246, 0.3)',
-                                    borderRadius: '4px',
-                                    color: '#93c5fd',
-                                    cursor: 'pointer'
-                                }}
                             >
                                 Show All
                             </button>
                             <button
+                                className="d2c-group-btn d2c-group-btn--hide"
                                 onClick={() => setHiddenGroups(new Set(dotplotData.groups))}
-                                style={{
-                                    flex: 1,
-                                    padding: '6px',
-                                    fontSize: '0.75rem',
-                                    backgroundColor: 'rgba(148, 163, 184, 0.1)',
-                                    border: '1px solid rgba(148, 163, 184, 0.3)',
-                                    borderRadius: '4px',
-                                    color: '#94a3b8',
-                                    cursor: 'pointer'
-                                }}
                             >
                                 Hide All
                             </button>
@@ -529,8 +357,8 @@ export default function Drug2CellView({ obsAttributes = [] }) {
             </div>
 
             {/* Right Column: Visualization */}
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'auto' }}>
-                <div className="embedding-card" style={{ flex: 1, minHeight: '500px' }}>
+            <div className="plot-main">
+                <div className="embedding-card d2c-plot-card">
                     <div className="embedding-header">
                         <div className="embedding-title">
                             <h2>DRUG2CELL DOTPLOT</h2>
@@ -541,23 +369,17 @@ export default function Drug2CellView({ obsAttributes = [] }) {
                             )}
                         </div>
                         {dotplotData && (
-                            <SaveButton onClick={() => handleSavePlot(dotplotRef, 'drug2cell_dotplot')} />
+                            <SaveButton onClick={() => savePlotSvg(dotplotRef, 'drug2cell_dotplot')} />
                         )}
                     </div>
 
                     {/* Error */}
-                    {dotplotError && (
-                        <div style={{ padding: '12px 16px', backgroundColor: 'rgba(239, 68, 68, 0.1)', color: '#f87171', fontSize: '0.8rem' }}>
-                            {dotplotError}
-                        </div>
-                    )}
+                    {dotplotError && <div className="plot-error-bar">{dotplotError}</div>}
 
                     {/* Plot Area */}
-                    <div className="embedding-canvas" style={{ flex: 1, position: 'relative', overflow: 'auto', maxHeight: '80vh' }}>
+                    <div className="embedding-canvas plot-canvas plot-canvas--scroll">
                         {dotplotLoading ? (
-                            <div style={{ display: 'flex', height: '100%', alignItems: 'center', justifyContent: 'center', color: '#94a3b8' }}>
-                                Loading dotplot...
-                            </div>
+                            <div className="plot-loading">Loading dotplot...</div>
                         ) : dotplotData ? (
                             <DotplotChart
                                 data={dotplotData}
@@ -567,16 +389,16 @@ export default function Drug2CellView({ obsAttributes = [] }) {
                                 plotRef={dotplotRef}
                             />
                         ) : !isReady ? (
-                            <div style={{ display: 'flex', height: '100%', alignItems: 'center', justifyContent: 'center', color: '#94a3b8', flexDirection: 'column', gap: '8px' }}>
+                            <div className="plot-empty">
                                 <span>Compute Drug2Cell scores first</span>
-                                <span style={{ fontSize: '0.8rem', color: '#64748b' }}>
-                                    Confirm human data and click "Score Cells"
+                                <span className="plot-empty-sub">
+                                    Confirm human data and click &quot;Score Cells&quot;
                                 </span>
                             </div>
                         ) : (
-                            <div style={{ display: 'flex', height: '100%', alignItems: 'center', justifyContent: 'center', color: '#94a3b8', flexDirection: 'column', gap: '8px' }}>
-                                <span>Select options and click "Show Dotplot"</span>
-                                <span style={{ fontSize: '0.8rem', color: '#64748b' }}>
+                            <div className="plot-empty">
+                                <span>Select options and click &quot;Show Dotplot&quot;</span>
+                                <span className="plot-empty-sub">
                                     View group-specific drug signatures
                                 </span>
                             </div>

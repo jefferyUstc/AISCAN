@@ -1,28 +1,19 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { getUserInfo, clearStoredIds } from "../utils/userIdGenerator.js";
-
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "";
+import { apiGet, apiPost } from "../api/client.js";
 
 export default function SessionDebugPanel() {
-  const [userInfo, setUserInfo] = useState(null);
+  const [userInfo, setUserInfo] = useState(() => getUserInfo());
   const [sessionStats, setSessionStats] = useState(null);
   const [loading, setLoading] = useState(false);
   const [panelMode, setPanelMode] = useState('hidden');
 
-  useEffect(() => {
-    setUserInfo(getUserInfo());
-  }, []);
-
   const fetchSessionStats = async () => {
     setLoading(true);
     try {
-      const response = await fetch(`${API_BASE}/api/assistant/session-stats`);
-      if (response.ok) {
-        const stats = await response.json();
-        setSessionStats(stats);
-      }
+      setSessionStats(await apiGet("/api/assistant/session-stats"));
     } catch (error) {
-      console.error('Failed to fetch session stats:', error);
+      console.error("Failed to fetch session stats:", error);
     } finally {
       setLoading(false);
     }
@@ -31,17 +22,12 @@ export default function SessionDebugPanel() {
   const cleanupSessions = async () => {
     setLoading(true);
     try {
-      const response = await fetch(`${API_BASE}/api/assistant/cleanup-sessions`, {
-        method: 'POST'
-      });
-      if (response.ok) {
-        const result = await response.json();
-        alert(`Cleanup completed:\n- Expired: ${result.expired}\n- Idle: ${result.idle}`);
-        fetchSessionStats(); // Refresh stats
-      }
+      const result = await apiPost("/api/assistant/cleanup-sessions");
+      alert(`Cleanup completed:\n- Expired: ${result.expired}\n- Idle: ${result.idle}`);
+      fetchSessionStats(); // Refresh stats
     } catch (error) {
-      console.error('Failed to cleanup sessions:', error);
-      alert('Failed to cleanup sessions');
+      console.error("Failed to cleanup sessions:", error);
+      alert("Failed to cleanup sessions");
     } finally {
       setLoading(false);
     }
@@ -122,7 +108,6 @@ export default function SessionDebugPanel() {
               <strong>User Info:</strong>
               <div>ID: <code>{userInfo.userId}</code></div>
               <div>Session: <code>{userInfo.sessionId}</code></div>
-              <div>Fingerprint: <code>{userInfo.fingerprint}</code></div>
             </div>
           )}
 

@@ -1,55 +1,12 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import Plotly from 'plotly.js-dist-min';
-import createPlotlyComponent from 'react-plotly.js/factory';
+import { useQuery } from '@tanstack/react-query';
 import { useDegData } from '../hooks/useDegData';
+import { apiGet } from '../api/client.js';
+import Plot from '../plots/plotly.js';
+import SaveButton, { savePlotSvg } from '../plots/SaveButton.jsx';
+import { downloadText } from '../utils/download.js';
 
-const Plot = createPlotlyComponent(Plotly);
-
-const handleSavePlot = (ref, filename) => {
-    const el = ref?.current?.el || ref?.current;
-    if (!el) return;
-    const safeName = (filename || 'plot').replace(/[^\w.-]+/g, '_');
-    const width = el?.offsetWidth || undefined;
-    const height = el?.offsetHeight || undefined;
-    Plotly.downloadImage(el, {
-        format: 'svg',
-        filename: safeName,
-        width,
-        height,
-        scale: 5
-    }).catch(() => {
-        // ignore download errors (e.g. canvas tainted)
-    });
-};
-
-const SaveButton = ({ onClick }) => (
-    <button
-        type="button"
-        onClick={onClick}
-        style={{
-            padding: '2px 8px',
-            borderRadius: '4px',
-            border: '1px solid rgba(148, 163, 184, 0.4)',
-            backgroundColor: 'transparent',
-            color: '#94a3b8',
-            fontSize: '0.7rem',
-            cursor: 'pointer',
-            marginLeft: '8px',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '4px'
-        }}
-        onMouseOver={e => { e.currentTarget.style.color = '#3b82f6'; e.currentTarget.style.borderColor = '#3b82f6'; }}
-        onMouseOut={e => { e.currentTarget.style.color = '#94a3b8'; e.currentTarget.style.borderColor = 'rgba(148, 163, 184, 0.4)'; }}
-        title="Save plot as SVG"
-    >
-        <span>📷 Save</span>
-    </button>
-);
-
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "";
-
-export default function DiffExprView({ selectedIds, onViewGene, obsAttributes = [], onViewSignature }) {
+export default function DiffExprView({ onViewGene, obsAttributes = [], onViewSignature }) {
 
     const { groups, selectedGroup, setSelectedGroup, degData, loading, error } = useDegData();
     const [selectedGene, setSelectedGene] = useState(null);
@@ -106,17 +63,17 @@ export default function DiffExprView({ selectedIds, onViewGene, obsAttributes = 
     }, [obsAttributes]);
 
     return (
-        <div className="layout-root" style={{ gap: '16px', padding: '16px' }}>
+        <div className="layout-root plot-view">
             {/* Left Column: Controls & Gene List */}
-            <div className="sidebar-card" style={{ width: '350px', display: 'flex', flexDirection: 'column', minWidth: '300px', padding: '0' }}>
-                <div style={{ padding: '16px', borderBottom: '1px solid rgba(148, 163, 184, 0.2)' }}>
-                    <h3 className="sidebar-title" style={{ marginBottom: '12px' }}>DEGs</h3>
+            <div className="sidebar-card deg-sidebar">
+                <div className="deg-sidebar-head">
+                    <h3 className="sidebar-title">DEGs</h3>
                     <div className="field">
-                        <label style={{ fontSize: '0.8rem', fontWeight: 600, color: '#64748b' }}>COMPARE GROUP VS REST</label>
+                        <label className="deg-compare-label">COMPARE GROUP VS REST</label>
                         <select
+                            className="full-width"
                             value={selectedGroup || ''}
                             onChange={(e) => setSelectedGroup(e.target.value)}
-                            style={{ width: '100%' }}
                         >
                             {groups.length === 0 && <option value="">Loading groups...</option>}
                             {groups.map(g => <option key={g} value={g}>{g}</option>)}
@@ -124,9 +81,9 @@ export default function DiffExprView({ selectedIds, onViewGene, obsAttributes = 
                     </div>
                 </div>
 
-                <div style={{ flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
-                    {loading && <div style={{ padding: '1rem', color: '#64748b', textAlign: 'center' }}>Loading analysis...</div>}
-                    {error && <div style={{ padding: '1rem', color: '#ef4444' }}>Error: {error}</div>}
+                <div className="deg-body">
+                    {loading && <div className="deg-status">Loading analysis...</div>}
+                    {error && <div className="deg-status deg-status--error">Error: {error}</div>}
 
                     {!loading && degData && degData.genes && (
                         <GeneList
@@ -143,99 +100,59 @@ export default function DiffExprView({ selectedIds, onViewGene, obsAttributes = 
             </div>
 
             {/* Right Column: Plots - Scrollable */}
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'auto' }}>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', minHeight: 'min-content' }}>
+            <div className="plot-main">
+                <div className="deg-plots-stack">
                     {/* Top: MA Plot */}
-                    <div className="embedding-card" style={{ minHeight: '350px' }}>
+                    <div className="embedding-card deg-ma-card">
                         <div className="embedding-header">
-                            <div className="embedding-title" style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px' }}>
+                            <div className="embedding-title plot-header-row plot-header-row--wrap">
                                 <h2>MA PLOT</h2>
-                                <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', fontSize: '0.75rem' }}>
-                                    <span style={{ color: '#64748b' }}>X:</span>
+                                <div className="ma-axis">
+                                    <span className="ma-axis-label">X:</span>
                                     <input
                                         type="number"
                                         placeholder="Min"
                                         value={maXMin}
                                         onChange={e => setMaXMin(e.target.value)}
-                                        style={{
-                                            width: '60px',
-                                            padding: '2px 6px',
-                                            borderRadius: '4px',
-                                            border: '1px solid rgba(148, 163, 184, 0.4)',
-                                            backgroundColor: 'rgba(15, 23, 42, 0.6)',
-                                            color: '#e2e8f0',
-                                            fontSize: '0.75rem'
-                                        }}
+                                        className="plot-number-input"
                                     />
-                                    <span style={{ color: '#64748b' }}>-</span>
+                                    <span className="ma-axis-label">-</span>
                                     <input
                                         type="number"
                                         placeholder="Max"
                                         value={maXMax}
                                         onChange={e => setMaXMax(e.target.value)}
-                                        style={{
-                                            width: '60px',
-                                            padding: '2px 6px',
-                                            borderRadius: '4px',
-                                            border: '1px solid rgba(148, 163, 184, 0.4)',
-                                            backgroundColor: 'rgba(15, 23, 42, 0.6)',
-                                            color: '#e2e8f0',
-                                            fontSize: '0.75rem'
-                                        }}
+                                        className="plot-number-input"
                                     />
-                                    <span style={{ color: '#64748b', marginLeft: '8px' }}>Y:</span>
+                                    <span className="ma-axis-label ma-axis-label--gap">Y:</span>
                                     <input
                                         type="number"
                                         placeholder="Min"
                                         value={maYMin}
                                         onChange={e => setMaYMin(e.target.value)}
-                                        style={{
-                                            width: '60px',
-                                            padding: '2px 6px',
-                                            borderRadius: '4px',
-                                            border: '1px solid rgba(148, 163, 184, 0.4)',
-                                            backgroundColor: 'rgba(15, 23, 42, 0.6)',
-                                            color: '#e2e8f0',
-                                            fontSize: '0.75rem'
-                                        }}
+                                        className="plot-number-input"
                                     />
-                                    <span style={{ color: '#64748b' }}>-</span>
+                                    <span className="ma-axis-label">-</span>
                                     <input
                                         type="number"
                                         placeholder="Max"
                                         value={maYMax}
                                         onChange={e => setMaYMax(e.target.value)}
-                                        style={{
-                                            width: '60px',
-                                            padding: '2px 6px',
-                                            borderRadius: '4px',
-                                            border: '1px solid rgba(148, 163, 184, 0.4)',
-                                            backgroundColor: 'rgba(15, 23, 42, 0.6)',
-                                            color: '#e2e8f0',
-                                            fontSize: '0.75rem'
-                                        }}
+                                        className="plot-number-input"
                                     />
                                     <button
+                                        className="plot-mini-btn"
                                         onClick={() => {
                                             setMaXMin('');
                                             setMaXMax('');
                                             setMaYMin('');
                                             setMaYMax('');
                                         }}
-                                        style={{
-                                            padding: '2px 8px',
-                                            borderRadius: '4px',
-                                            border: '1px solid rgba(148, 163, 184, 0.4)',
-                                            backgroundColor: 'transparent',
-                                            color: '#94a3b8',
-                                            fontSize: '0.7rem',
-                                            cursor: 'pointer',
-                                            marginLeft: '4px'
-                                        }}
                                     >
                                         Reset
                                     </button>
                                     <button
+                                        className="plot-mini-btn"
                                         onClick={() => {
                                             if (dataRanges) {
                                                 setMaXMin(String(dataRanges.xMin));
@@ -244,24 +161,14 @@ export default function DiffExprView({ selectedIds, onViewGene, obsAttributes = 
                                                 setMaYMax(String(dataRanges.yMax));
                                             }
                                         }}
-                                        style={{
-                                            padding: '2px 8px',
-                                            borderRadius: '4px',
-                                            border: '1px solid rgba(148, 163, 184, 0.4)',
-                                            backgroundColor: 'transparent',
-                                            color: '#94a3b8',
-                                            fontSize: '0.7rem',
-                                            cursor: 'pointer',
-                                            marginLeft: '4px'
-                                        }}
                                     >
                                         Auto
                                     </button>
-                                    <SaveButton onClick={() => handleSavePlot(maPlotRef, 'ma_plot')} />
+                                    <SaveButton onClick={() => savePlotSvg(maPlotRef, 'ma_plot')} />
                                 </div>
                             </div>
                         </div>
-                        <div className="embedding-canvas" style={{ flex: 1, position: 'relative' }}>
+                        <div className="embedding-canvas plot-canvas">
                             {degData ? (
                                 <MaPlot
                                     ref={maPlotRef}
@@ -279,39 +186,22 @@ export default function DiffExprView({ selectedIds, onViewGene, obsAttributes = 
                     </div>
 
                     {/* Middle: Violin Plot */}
-                    <div className="embedding-card" style={{ minHeight: '300px' }}>
+                    <div className="embedding-card deg-expr-card">
                         <div className="embedding-header">
-                            <div className="embedding-title" style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                            <div className="embedding-title plot-header-row">
+                                <div className="plot-header-group">
                                     <h2>EXPRESSION DISTRIBUTION</h2>
                                     {selectedGene && <span className="embedding-count">{selectedGene}</span>}
-                                    {selectedGene && <SaveButton onClick={() => handleSavePlot(exprPlotRef, `expression_${selectedGene}`)} />}
+                                    {selectedGene && <SaveButton onClick={() => savePlotSvg(exprPlotRef, `expression_${selectedGene}`)} />}
                                 </div>
                                 {selectedGene && onViewGene && (
-                                    <button
-                                        onClick={() => onViewGene(selectedGene)}
-                                        style={{
-                                            background: 'transparent',
-                                            border: '1px solid rgba(148, 163, 184, 0.4)',
-                                            color: '#94a3b8',
-                                            borderRadius: '4px',
-                                            padding: '4px 8px',
-                                            fontSize: '0.75rem',
-                                            cursor: 'pointer',
-                                            transition: 'all 0.2s',
-                                            display: 'flex',
-                                            alignItems: 'center',
-                                            gap: '6px'
-                                        }}
-                                        onMouseOver={e => { e.currentTarget.style.color = '#3b82f6'; e.currentTarget.style.borderColor = '#3b82f6'; }}
-                                        onMouseOut={e => { e.currentTarget.style.color = '#94a3b8'; e.currentTarget.style.borderColor = 'rgba(148, 163, 184, 0.4)'; }}
-                                    >
+                                    <button className="plot-ghost-btn" onClick={() => onViewGene(selectedGene)}>
                                         <span>🎨 View in Embedding</span>
                                     </button>
                                 )}
                             </div>
                         </div>
-                        <div className="embedding-canvas" style={{ flex: 1, position: 'relative' }}>
+                        <div className="embedding-canvas plot-canvas">
                             {selectedGene ? (
                                 <GeneExpressionPlot ref={exprPlotRef} gene={selectedGene} />
                             ) : (
@@ -340,20 +230,16 @@ export default function DiffExprView({ selectedIds, onViewGene, obsAttributes = 
 
 
 function EmptyPlotState({ message }) {
-    return (
-        <div style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            height: '100%',
-            color: 'rgba(226, 232, 240, 0.5)',
-            fontSize: '0.9rem'
-        }}>
-            {message}
-        </div>
-    );
+    return <div className="plot-placeholder">{message}</div>;
 }
 
+
+function SortIcon({ column, sortConfig }) {
+    if (sortConfig.key !== column) {
+        return <span className="deg-sort-icon deg-sort-icon--idle">⇅</span>;
+    }
+    return <span className="deg-sort-icon">{sortConfig.direction === 'asc' ? '↑' : '↓'}</span>;
+}
 
 function GeneList({ genes, selectedGene, onSelect, minLfc, setMinLfc, maxPval, setMaxPval }) {
     const [sortConfig, setSortConfig] = useState({ key: 'logfoldchanges', direction: 'desc' });
@@ -396,43 +282,24 @@ function GeneList({ genes, selectedGene, onSelect, minLfc, setMinLfc, maxPval, s
         }));
     };
 
-    const SortIcon = ({ column }) => {
-        if (sortConfig.key !== column) return <span style={{ opacity: 0.2, marginLeft: 4 }}>⇅</span>;
-        return <span style={{ marginLeft: 4 }}>{sortConfig.direction === 'asc' ? '↑' : '↓'}</span>;
-    };
-
     return (
-        <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+        <div className="deg-list">
             {/* Filter Controls */}
-            <div style={{
-                padding: '12px 16px',
-                borderBottom: '1px solid rgba(148, 163, 184, 0.2)',
-                display: 'flex',
-                flexDirection: 'column',
-                gap: '12px',
-                fontSize: '0.8rem',
-                backgroundColor: 'rgba(241, 245, 249, 0.5)'
-            }}>
-                <div style={{ display: 'flex', gap: '12px' }}>
-                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                        <label style={{ fontWeight: 600, color: '#64748b' }}>Min |LFC|</label>
+            <div className="deg-filters">
+                <div className="deg-filter-row">
+                    <div className="deg-field">
+                        <label>Min |LFC|</label>
                         <input
                             type="number"
                             step="0.1"
                             min="0"
                             value={minLfc}
                             onChange={e => setMinLfc(parseFloat(e.target.value) || 0)}
-                            style={{
-                                padding: '4px 8px',
-                                borderRadius: '6px',
-                                border: '1px solid #cbd5e1',
-                                fontSize: '0.8rem',
-                                width: '100%'
-                            }}
+                            className="deg-input"
                         />
                     </div>
-                    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                        <label style={{ fontWeight: 600, color: '#64748b' }}>Max Adj P</label>
+                    <div className="deg-field">
+                        <label>Max Adj P</label>
                         <input
                             type="number"
                             step="0.01"
@@ -440,69 +307,38 @@ function GeneList({ genes, selectedGene, onSelect, minLfc, setMinLfc, maxPval, s
                             max="1"
                             value={maxPval}
                             onChange={e => setMaxPval(parseFloat(e.target.value) || 0)}
-                            style={{
-                                padding: '4px 8px',
-                                borderRadius: '6px',
-                                border: '1px solid #cbd5e1',
-                                fontSize: '0.8rem',
-                                width: '100%'
-                            }}
+                            className="deg-input"
                         />
                     </div>
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <div className="deg-check">
                     <input
                         type="checkbox"
                         id="onlyPositive"
                         checked={onlyPositive}
                         onChange={e => setOnlyPositive(e.target.checked)}
-                        style={{ cursor: 'pointer' }}
                     />
-                    <label htmlFor="onlyPositive" style={{ cursor: 'pointer', color: '#475569', fontWeight: 500 }}>
-                        Positive LFC only
-                    </label>
+                    <label htmlFor="onlyPositive">Positive LFC only</label>
                 </div>
             </div>
 
             {/* Header */}
-            <div style={{
-                display: 'grid',
-                gridTemplateColumns: '1.5fr 1fr 1fr',
-                padding: '10px 16px',
-                fontSize: '0.75rem',
-                fontWeight: 600,
-                color: '#64748b',
-                borderBottom: '1px solid rgba(148, 163, 184, 0.1)',
-                backgroundColor: 'rgba(248, 250, 252, 0.8)',
-                position: 'sticky',
-                top: 0
-            }}>
-                <span
-                    onClick={() => handleSort('name')}
-                    style={{ cursor: 'pointer', display: 'flex', alignItems: 'center' }}
-                >
-                    GENE <SortIcon column="name" />
+            <div className="deg-gene-head">
+                <span className="deg-sort" onClick={() => handleSort('name')}>
+                    GENE <SortIcon column="name" sortConfig={sortConfig} />
                 </span>
-                <span
-                    onClick={() => handleSort('logfoldchanges')}
-                    style={{ textAlign: 'right', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}
-                >
-                    LFC <SortIcon column="logfoldchanges" />
+                <span className="deg-sort deg-sort--num" onClick={() => handleSort('logfoldchanges')}>
+                    LFC <SortIcon column="logfoldchanges" sortConfig={sortConfig} />
                 </span>
-                <span
-                    onClick={() => handleSort('pvals_adj')}
-                    style={{ textAlign: 'right', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'flex-end' }}
-                >
-                    ADJ P <SortIcon column="pvals_adj" />
+                <span className="deg-sort deg-sort--num" onClick={() => handleSort('pvals_adj')}>
+                    ADJ P <SortIcon column="pvals_adj" sortConfig={sortConfig} />
                 </span>
             </div>
 
             {/* List */}
-            <div style={{ flex: 1, overflowY: 'auto' }}>
+            <div className="deg-gene-list">
                 {processedGenes.length === 0 ? (
-                    <div style={{ padding: '20px', textAlign: 'center', color: '#94a3b8', fontSize: '0.85rem' }}>
-                        No genes match criteria.
-                    </div>
+                    <div className="deg-gene-empty">No genes match criteria.</div>
                 ) : (
                     processedGenes.map(gene => {
                         const isActive = selectedGene === gene.name;
@@ -510,24 +346,15 @@ function GeneList({ genes, selectedGene, onSelect, minLfc, setMinLfc, maxPval, s
                             <div
                                 key={gene.id}
                                 onClick={() => onSelect(gene.name)}
-                                style={{
-                                    display: 'grid',
-                                    gridTemplateColumns: '1.5fr 1fr 1fr',
-                                    padding: '8px 16px',
-                                    cursor: 'pointer',
-                                    backgroundColor: isActive ? 'rgba(59, 130, 246, 0.1)' : 'transparent',
-                                    borderLeft: isActive ? '3px solid #3b82f6' : '3px solid transparent',
-                                    fontSize: '0.85rem',
-                                    alignItems: 'center',
-                                    transition: 'background-color 0.15s ease'
-                                }}
-                                className={!isActive ? "hover:bg-slate-50" : ""}
+                                className={`deg-gene-row ${isActive ? "active" : ""}`}
                             >
-                                <span style={{ fontWeight: 500, color: '#1e293b' }}>{gene.name}</span>
-                                <span style={{ textAlign: 'right', color: gene.logfoldchanges > 0 ? '#ef4444' : '#3b82f6', fontWeight: 500 }}>
+                                <span className="deg-gene-name">{gene.name}</span>
+                                <span
+                                    className={`deg-lfc ${gene.logfoldchanges > 0 ? "deg-lfc--up" : "deg-lfc--down"}`}
+                                >
                                     {gene.logfoldchanges.toFixed(2)}
                                 </span>
-                                <span style={{ textAlign: 'right', color: '#64748b', fontSize: '0.8rem' }}>
+                                <span className="deg-pval">
                                     {gene.pvals_adj < 0.001 ? '< 0.001' : gene.pvals_adj.toFixed(3)}
                                 </span>
                             </div>
@@ -677,36 +504,16 @@ const MaPlot = React.forwardRef(({ genes, selectedGene, onSelectGene, minLfc, xR
     );
 });
 
+MaPlot.displayName = "MaPlot";
+
 const GeneExpressionPlot = React.forwardRef(({ gene }, ref) => {
-    const [data, setData] = useState(null);
-    const [loading, setLoading] = useState(false);
+    const { data, isFetching } = useQuery({
+        queryKey: ['dataset', 'gene_expression', gene],
+        queryFn: () => apiGet('/api/dataset/gene_expression', { gene }),
+        enabled: Boolean(gene),
+    });
 
-    useEffect(() => {
-        if (!gene) return;
-
-        let ignore = false;
-        setLoading(true);
-
-        const fetchData = async () => {
-            try {
-                const encoded = encodeURIComponent(gene);
-                const res = await fetch(`${API_BASE}/api/dataset/gene_expression?gene=${encoded}`);
-                if (!res.ok) throw new Error("Failed to fetch");
-                const json = await res.json();
-                if (!ignore) setData(json);
-            } catch (err) {
-                console.error(err);
-            } finally {
-                if (!ignore) setLoading(false);
-            }
-        };
-
-        fetchData();
-
-        return () => { ignore = true; };
-    }, [gene]);
-
-    if (loading) return <div style={{ display: 'flex', height: '100%', alignItems: 'center', justifyContent: 'center', color: '#94a3b8' }}>Loading expression data...</div>;
+    if (isFetching && !data) return <div className="plot-placeholder">Loading expression data...</div>;
     if (!data) return null;
 
     const x = data.points.map(p => p.group);
@@ -761,6 +568,8 @@ const GeneExpressionPlot = React.forwardRef(({ gene }, ref) => {
     );
 });
 
+GeneExpressionPlot.displayName = "GeneExpressionPlot";
+
 function GeneSignatureScoring({ categoricalAttributes, onViewSignature }) {
     const [inputMode, setInputMode] = useState('manual'); // 'manual' or 'file'
     const [geneInput, setGeneInput] = useState('');
@@ -790,8 +599,7 @@ function GeneSignatureScoring({ categoricalAttributes, onViewSignature }) {
     useEffect(() => {
         if (inputMode === 'preset' && presetCategories.length === 0) {
             setLoadingPresets(true);
-            fetch(`${API_BASE}/api/dataset/pathways/categories`)
-                .then(res => res.json())
+            apiGet('/api/dataset/pathways/categories')
                 .then(data => {
                     setPresetCategories(data);
                     if (data.length > 0) setSelectedCategory(data[0]);
@@ -799,14 +607,13 @@ function GeneSignatureScoring({ categoricalAttributes, onViewSignature }) {
                 .catch(err => console.error(err))
                 .finally(() => setLoadingPresets(false));
         }
-    }, [inputMode]);
+    }, [inputMode, presetCategories.length]);
 
     // Fetch pathways when category changes
     useEffect(() => {
         if (!selectedCategory) return;
         setLoadingPresets(true);
-        fetch(`${API_BASE}/api/dataset/pathways/${selectedCategory}/pathways`)
-            .then(res => res.json())
+        apiGet(`/api/dataset/pathways/${selectedCategory}/pathways`)
             .then(data => {
                 setPresetPathways(data);
                 setSelectedPathway(''); // Reset pathway selection
@@ -815,19 +622,11 @@ function GeneSignatureScoring({ categoricalAttributes, onViewSignature }) {
             .finally(() => setLoadingPresets(false));
     }, [selectedCategory]);
 
-    // Fetch genes when pathway changes
+    // Fetch genes when pathway changes (encode the pathway segment for slashes/special chars)
     useEffect(() => {
         if (!selectedPathway || !selectedCategory) return;
         setLoadingPresets(true);
-        // Use encodeURIComponent for safety, though backend expects path param
-        const safeCat = selectedCategory;
-        const safePath = selectedPathway; // Don't encode entire path if backend decodes, but let's see. 
-        // FastAPI decodes path params automatically. 
-        // However, if pathway has slash, it might break. 
-        // Assuming names are simple or we encode.
-        // Let's encode just to be safe if names have weird chars.
-        fetch(`${API_BASE}/api/dataset/pathways/${safeCat}/${encodeURIComponent(safePath)}/genes`)
-            .then(res => res.json())
+        apiGet(`/api/dataset/pathways/${selectedCategory}/${encodeURIComponent(selectedPathway)}/genes`)
             .then(data => {
                 setGeneInput(data.join(', '));
                 setSignatureName(selectedPathway);
@@ -865,19 +664,11 @@ function GeneSignatureScoring({ categoricalAttributes, onViewSignature }) {
         try {
             // Allow newlines or commas
             const normalizedGenes = geneInput.replace(/[\r\n]+/g, ',');
-
-            const params = new URLSearchParams({
+            const data = await apiGet('/api/dataset/gene_signature_violin', {
                 genes: normalizedGenes,
                 groupby: selectedGroupby,
-                signature_name: signatureName || 'signature'
+                signature_name: signatureName || 'signature',
             });
-
-            const res = await fetch(`${API_BASE}/api/dataset/gene_signature_violin?${params}`);
-            if (!res.ok) {
-                const errData = await res.json().catch(() => ({}));
-                throw new Error(errData.detail || 'Failed to compute signature');
-            }
-            const data = await res.json();
             setSignatureData(data);
         } catch (err) {
             setError(err.message);
@@ -896,10 +687,10 @@ function GeneSignatureScoring({ categoricalAttributes, onViewSignature }) {
     const cardMinHeight = signatureData ? 450 : 180;
 
     return (
-        <div className="embedding-card" style={{ minHeight: `${cardMinHeight}px`, flex: 'none' }}>
+        <div className="embedding-card flex-none" style={{ minHeight: `${cardMinHeight}px` }}>
             <div className="embedding-header">
-                <div className="embedding-title" style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <div className="embedding-title plot-header-row">
+                    <div className="plot-header-group">
                         <h2>GENE SIGNATURE SCORING</h2>
                         {signatureData && (
                             <span className="embedding-count">
@@ -907,69 +698,45 @@ function GeneSignatureScoring({ categoricalAttributes, onViewSignature }) {
                             </span>
                         )}
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        {signatureData && <SaveButton onClick={() => handleSavePlot(sigPlotRef, `signature_${signatureData.signature_name}`)} />}
+                    <div className="plot-header-actions">
+                        {signatureData && <SaveButton onClick={() => savePlotSvg(sigPlotRef, `signature_${signatureData.signature_name}`)} />}
                         {signatureData && onViewSignature && (
-                        <button
-                            onClick={handleViewInEmbedding}
-                            style={{
-                                background: 'transparent',
-                                border: '1px solid rgba(148, 163, 184, 0.4)',
-                                color: '#94a3b8',
-                                borderRadius: '4px',
-                                padding: '4px 8px',
-                                fontSize: '0.75rem',
-                                cursor: 'pointer',
-                                transition: 'all 0.2s',
-                                display: 'flex',
-                                alignItems: 'center',
-                                gap: '6px'
-                            }}
-                            onMouseOver={e => { e.currentTarget.style.color = '#3b82f6'; e.currentTarget.style.borderColor = '#3b82f6'; }}
-                            onMouseOut={e => { e.currentTarget.style.color = '#94a3b8'; e.currentTarget.style.borderColor = 'rgba(148, 163, 184, 0.4)'; }}
-                        >
-                            <span>🎨 View in Embedding</span>
-                        </button>
-                    )}
+                            <button className="plot-ghost-btn" onClick={handleViewInEmbedding}>
+                                <span>🎨 View in Embedding</span>
+                            </button>
+                        )}
+                    </div>
                 </div>
-            </div>
             </div>
 
             {/* Input Controls */}
-            <div style={{
-                padding: '12px 16px',
-                borderBottom: '1px solid rgba(148, 163, 184, 0.1)',
-                backgroundColor: 'rgba(30, 41, 59, 0.3)'
-            }}>
+            <div className="plot-input-panel">
                 {/* Input Mode Toggle */}
-                <div style={{ display: 'flex', gap: '16px', marginBottom: '12px' }}>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', color: '#94a3b8', fontSize: '0.8rem' }}>
+                <div className="sig-mode-row">
+                    <label className="sig-radio">
                         <input
                             type="radio"
                             name="inputMode"
                             checked={inputMode === 'manual'}
                             onChange={() => setInputMode('manual')}
-                            style={{ accentColor: '#3b82f6' }}
                         />
                         Manual Input
                     </label>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', color: '#94a3b8', fontSize: '0.8rem' }}>
+                    <label className="sig-radio">
                         <input
                             type="radio"
                             name="inputMode"
                             checked={inputMode === 'file'}
                             onChange={() => setInputMode('file')}
-                            style={{ accentColor: '#3b82f6' }}
                         />
                         Upload File
                     </label>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', color: '#94a3b8', fontSize: '0.8rem' }}>
+                    <label className="sig-radio">
                         <input
                             type="radio"
                             name="inputMode"
                             checked={inputMode === 'preset'}
                             onChange={() => setInputMode('preset')}
-                            style={{ accentColor: '#3b82f6' }}
                         />
                         Preset Pathways
                     </label>
@@ -977,52 +744,24 @@ function GeneSignatureScoring({ categoricalAttributes, onViewSignature }) {
 
                 {/* Preset Selection UI */}
                 {inputMode === 'preset' && (
-                    <div style={{
-                        display: 'flex',
-                        gap: '12px',
-                        marginBottom: '12px',
-                        padding: '12px',
-                        backgroundColor: 'rgba(15, 23, 42, 0.4)',
-                        borderRadius: '6px',
-                        flexDirection: 'column'
-                    }}>
-                        <div style={{ display: 'flex', gap: '12px' }}>
-                            <div style={{ flex: 1 }}>
-                                <label style={{ fontSize: '0.75rem', fontWeight: 600, color: '#64748b', display: 'block', marginBottom: '4px' }}>
-                                    CATEGORY
-                                </label>
+                    <div className="sig-preset">
+                        <div className="sig-preset-row">
+                            <div className="sig-preset-col">
+                                <label className="plot-field-label">CATEGORY</label>
                                 <select
+                                    className="plot-select"
                                     value={selectedCategory}
                                     onChange={(e) => setSelectedCategory(e.target.value)}
-                                    style={{
-                                        width: '100%',
-                                        padding: '6px 10px',
-                                        borderRadius: '4px',
-                                        border: '1px solid rgba(148, 163, 184, 0.3)',
-                                        backgroundColor: 'rgba(15, 23, 42, 0.6)',
-                                        color: '#e2e8f0',
-                                        fontSize: '0.85rem'
-                                    }}
                                 >
                                     {presetCategories.map(c => <option key={c} value={c}>{c}</option>)}
                                 </select>
                             </div>
-                            <div style={{ flex: 1 }}>
-                                <label style={{ fontSize: '0.75rem', fontWeight: 600, color: '#64748b', display: 'block', marginBottom: '4px' }}>
-                                    PATHWAY
-                                </label>
+                            <div className="sig-preset-col">
+                                <label className="plot-field-label">PATHWAY</label>
                                 <select
+                                    className="plot-select"
                                     value={selectedPathway}
                                     onChange={(e) => setSelectedPathway(e.target.value)}
-                                    style={{
-                                        width: '100%',
-                                        padding: '6px 10px',
-                                        borderRadius: '4px',
-                                        border: '1px solid rgba(148, 163, 184, 0.3)',
-                                        backgroundColor: 'rgba(15, 23, 42, 0.6)',
-                                        color: '#e2e8f0',
-                                        fontSize: '0.85rem'
-                                    }}
                                 >
                                     <option value="">Select a pathway...</option>
                                     {presetPathways.map(p => <option key={p} value={p}>{p}</option>)}
@@ -1030,7 +769,7 @@ function GeneSignatureScoring({ categoricalAttributes, onViewSignature }) {
                             </div>
                         </div>
                         {geneInput && (
-                            <div style={{ fontSize: '0.8rem', color: '#64748b', textAlign: 'center' }}>
+                            <div className="sig-hint">
                                 {loadingPresets ? 'Loading genes...' : `Loaded ${geneInput.split(',').length} genes`}
                             </div>
                         )}
@@ -1040,49 +779,25 @@ function GeneSignatureScoring({ categoricalAttributes, onViewSignature }) {
                 {/* Gene Input */}
                 {inputMode === 'manual' ? (
                     <textarea
+                        className="sig-textarea"
                         value={geneInput}
                         onChange={(e) => setGeneInput(e.target.value)}
                         placeholder="Enter genes (one per line or separated by commas)"
-                        style={{
-                            width: '100%',
-                            minHeight: '60px',
-                            padding: '8px 12px',
-                            borderRadius: '6px',
-                            border: '1px solid rgba(148, 163, 184, 0.3)',
-                            backgroundColor: 'rgba(15, 23, 42, 0.6)',
-                            color: '#e2e8f0',
-                            fontSize: '0.85rem',
-                            resize: 'vertical',
-                            fontFamily: 'monospace'
-                        }}
                     />
                 ) : inputMode === 'file' ? (
-                    <div style={{
-                        border: '2px dashed rgba(148, 163, 184, 0.3)',
-                        borderRadius: '6px',
-                        padding: '16px',
-                        textAlign: 'center',
-                        backgroundColor: 'rgba(15, 23, 42, 0.4)'
-                    }}>
+                    <div className="sig-dropzone">
                         <input
                             type="file"
                             accept=".txt,.csv"
                             onChange={handleFileUpload}
-                            style={{ display: 'none' }}
+                            hidden
                             id="gene-file-upload"
                         />
-                        <label
-                            htmlFor="gene-file-upload"
-                            style={{
-                                cursor: 'pointer',
-                                color: '#94a3b8',
-                                fontSize: '0.85rem'
-                            }}
-                        >
+                        <label htmlFor="gene-file-upload" className="sig-dropzone-label">
                             📁 Click to upload a text file (one gene per line)
                         </label>
                         {geneInput && (
-                            <div style={{ marginTop: '8px', fontSize: '0.8rem', color: '#64748b' }}>
+                            <div className="sig-dropzone-hint">
                                 Loaded: {geneInput.split(',').filter(g => g.trim()).length} genes
                             </div>
                         )}
@@ -1090,88 +805,54 @@ function GeneSignatureScoring({ categoricalAttributes, onViewSignature }) {
                 ) : null}
 
                 {/* Options Row */}
-                <div style={{ display: 'flex', gap: '12px', marginTop: '12px', alignItems: 'flex-end' }}>
-                    <div style={{ flex: 1 }}>
-                        <label style={{ fontSize: '0.75rem', fontWeight: 600, color: '#64748b', display: 'block', marginBottom: '4px' }}>
-                            GROUP BY
-                        </label>
+                <div className="sig-options">
+                    <div className="sig-field">
+                        <label className="plot-field-label">GROUP BY</label>
                         <select
+                            className="plot-select"
                             value={selectedGroupby}
                             onChange={(e) => setSelectedGroupby(e.target.value)}
-                            style={{
-                                width: '100%',
-                                padding: '6px 10px',
-                                borderRadius: '4px',
-                                border: '1px solid rgba(148, 163, 184, 0.3)',
-                                backgroundColor: 'rgba(15, 23, 42, 0.6)',
-                                color: '#e2e8f0',
-                                fontSize: '0.85rem'
-                            }}
                         >
                             {categoricalAttributes.map(attr => (
                                 <option key={attr.name} value={attr.name}>{attr.label || attr.name}</option>
                             ))}
                         </select>
                     </div>
-                    <div style={{ flex: 1 }}>
-                        <label style={{ fontSize: '0.75rem', fontWeight: 600, color: '#64748b', display: 'block', marginBottom: '4px' }}>
-                            SIGNATURE NAME
-                        </label>
+                    <div className="sig-field">
+                        <label className="plot-field-label">SIGNATURE NAME</label>
                         <input
                             type="text"
+                            className="plot-text-input"
                             value={signatureName}
                             onChange={(e) => setSignatureName(e.target.value)}
                             placeholder="signature"
-                            style={{
-                                width: '100%',
-                                padding: '6px 10px',
-                                borderRadius: '4px',
-                                border: '1px solid rgba(148, 163, 184, 0.3)',
-                                backgroundColor: 'rgba(15, 23, 42, 0.6)',
-                                color: '#e2e8f0',
-                                fontSize: '0.85rem'
-                            }}
                         />
                     </div>
                     <button
+                        className="plot-btn plot-btn--accent"
                         onClick={handleCompute}
                         disabled={loading || !geneInput.trim() || !selectedGroupby}
-                        style={{
-                            padding: '6px 16px',
-                            borderRadius: '4px',
-                            border: 'none',
-                            backgroundColor: loading ? '#475569' : '#3b82f6',
-                            color: '#fff',
-                            fontSize: '0.85rem',
-                            fontWeight: 500,
-                            cursor: loading ? 'not-allowed' : 'pointer',
-                            transition: 'background-color 0.2s',
-                            whiteSpace: 'nowrap'
-                        }}
                     >
                         {loading ? 'Computing...' : 'Compute'}
                     </button>
                 </div>
 
                 {/* Feedback Messages */}
-                {error && (
-                    <div style={{ marginTop: '8px', padding: '8px', backgroundColor: 'rgba(239, 68, 68, 0.1)', borderRadius: '4px', color: '#f87171', fontSize: '0.8rem' }}>
-                        {error}
-                    </div>
-                )}
+                {error && <div className="plot-alert plot-alert--error">{error}</div>}
                 {signatureData && signatureData.genes_not_found.length > 0 && (
-                    <div style={{ marginTop: '8px', padding: '8px', backgroundColor: 'rgba(251, 191, 36, 0.1)', borderRadius: '4px', color: '#fbbf24', fontSize: '0.8rem' }}>
+                    <div className="plot-alert plot-alert--warn">
                         ⚠️ Genes not found: {signatureData.genes_not_found.join(', ')}
                     </div>
                 )}
             </div>
 
             {/* Violin Plot */}
-            <div className="embedding-canvas" style={{ flex: 1, position: 'relative', minHeight: signatureData ? '300px' : '60px' }}>
+            <div
+                className="embedding-canvas plot-canvas"
+                style={{ minHeight: signatureData ? '300px' : '60px' }}
+            >
                 {loading ? (
-                    <div style={{ display: 'flex', height: '100%', alignItems: 'center', justifyContent: 'center', color: '#94a3b8' }}>
-                        Computing signature scores...
-                    </div>
+                    <div className="plot-loading">Computing signature scores...</div>
                 ) : signatureData ? (
                     <SignatureViolinPlot ref={sigPlotRef} data={signatureData} />
                 ) : (
@@ -1228,6 +909,8 @@ const SignatureViolinPlot = React.forwardRef(({ data }, ref) => (
 ));
 
 
+SignatureViolinPlot.displayName = "SignatureViolinPlot";
+
 function GOEnrichmentCard({ selectedGroup, minLfc, maxPval }) {
     const [enrichmentData, setEnrichmentData] = useState(null); // Full data from API
     const [loading, setLoading] = useState(false);
@@ -1243,18 +926,11 @@ function GOEnrichmentCard({ selectedGroup, minLfc, maxPval }) {
         setEnrichmentData(null);
 
         try {
-            const params = new URLSearchParams({
+            const data = await apiGet('/api/dataset/go_enrichment', {
                 group: selectedGroup,
-                min_lfc: minLfc.toString(),
-                max_pval: maxPval.toString(),
+                min_lfc: minLfc,
+                max_pval: maxPval,
             });
-
-            const res = await fetch(`${API_BASE}/api/dataset/go_enrichment?${params}`);
-            if (!res.ok) {
-                const errData = await res.json().catch(() => ({}));
-                throw new Error(errData.detail || 'Failed to run GO enrichment');
-            }
-            const data = await res.json();
             setEnrichmentData(data);
         } catch (err) {
             setError(err.message);
@@ -1286,13 +962,11 @@ function GOEnrichmentCard({ selectedGroup, minLfc, maxPval }) {
         ]);
 
         const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
-        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = `GO_enrichment_${selectedGroup}_${new Date().toISOString().slice(0, 10)}.csv`;
-        link.click();
-        URL.revokeObjectURL(url);
+        downloadText(
+            csv,
+            `GO_enrichment_${selectedGroup}_${new Date().toISOString().slice(0, 10)}.csv`,
+            'text/csv;charset=utf-8;'
+        );
     };
 
     // Truncate long GO term names
@@ -1312,10 +986,10 @@ function GOEnrichmentCard({ selectedGroup, minLfc, maxPval }) {
 
 
     return (
-        <div className="embedding-card" style={{ minHeight: `${cardMinHeight}px`, flex: 'none' }}>
+        <div className="embedding-card flex-none" style={{ minHeight: `${cardMinHeight}px` }}>
             <div className="embedding-header">
-                <div className="embedding-title" style={{ width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <div className="embedding-title plot-header-row">
+                    <div className="plot-header-group">
                         <h2>GO ENRICHMENT</h2>
                         {enrichmentData && enrichmentData.terms.length > 0 && (
                             <span className="embedding-count">
@@ -1323,19 +997,12 @@ function GOEnrichmentCard({ selectedGroup, minLfc, maxPval }) {
                             </span>
                         )}
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <div className="plot-header-actions">
                         {/* Top N selector */}
                         <select
+                            className="plot-select-sm"
                             value={topN}
                             onChange={(e) => setTopN(Number(e.target.value))}
-                            style={{
-                                padding: '5px 8px',
-                                borderRadius: '4px',
-                                border: '1px solid rgba(148, 163, 184, 0.3)',
-                                backgroundColor: 'rgba(15, 23, 42, 0.6)',
-                                color: '#e2e8f0',
-                                fontSize: '0.75rem'
-                            }}
                         >
                             <option value={10}>Top 10</option>
                             <option value={20}>Top 20</option>
@@ -1345,22 +1012,8 @@ function GOEnrichmentCard({ selectedGroup, minLfc, maxPval }) {
                         {/* Download button */}
                         {enrichmentData && enrichmentData.terms.length > 0 && (
                             <button
+                                className="plot-ghost-btn"
                                 onClick={downloadCSV}
-                                style={{
-                                    padding: '5px 10px',
-                                    borderRadius: '4px',
-                                    border: '1px solid rgba(148, 163, 184, 0.4)',
-                                    backgroundColor: 'transparent',
-                                    color: '#94a3b8',
-                                    fontSize: '0.75rem',
-                                    cursor: 'pointer',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    gap: '4px',
-                                    transition: 'all 0.2s'
-                                }}
-                                onMouseOver={e => { e.currentTarget.style.color = '#3b82f6'; e.currentTarget.style.borderColor = '#3b82f6'; }}
-                                onMouseOut={e => { e.currentTarget.style.color = '#94a3b8'; e.currentTarget.style.borderColor = 'rgba(148, 163, 184, 0.4)'; }}
                                 title="Download full enrichment table as CSV"
                             >
                                 📥 CSV
@@ -1368,24 +1021,14 @@ function GOEnrichmentCard({ selectedGroup, minLfc, maxPval }) {
                         )}
 
                         {enrichmentData && enrichmentData.terms.length > 0 && (
-                            <SaveButton onClick={() => handleSavePlot(goPlotRef, `GO_enrichment_${selectedGroup}`)} />
+                            <SaveButton onClick={() => savePlotSvg(goPlotRef, `GO_enrichment_${selectedGroup}`)} />
                         )}
 
                         {/* Run button */}
                         <button
+                            className="plot-btn plot-btn--success"
                             onClick={runEnrichment}
                             disabled={loading || !selectedGroup}
-                            style={{
-                                padding: '6px 16px',
-                                borderRadius: '4px',
-                                border: 'none',
-                                backgroundColor: loading ? '#475569' : '#10b981',
-                                color: '#fff',
-                                fontSize: '0.8rem',
-                                fontWeight: 500,
-                                cursor: loading || !selectedGroup ? 'not-allowed' : 'pointer',
-                                transition: 'background-color 0.2s',
-                            }}
                         >
                             {loading ? 'Analyzing...' : '🧬 Run Enrichment'}
                         </button>
@@ -1394,27 +1037,20 @@ function GOEnrichmentCard({ selectedGroup, minLfc, maxPval }) {
             </div>
 
             {/* Info Bar */}
-            <div style={{
-                padding: '8px 16px',
-                backgroundColor: 'rgba(30, 41, 59, 0.3)',
-                borderBottom: '1px solid rgba(148, 163, 184, 0.1)',
-                fontSize: '0.75rem',
-                color: '#94a3b8'
-            }}>
+            <div className="plot-info-bar">
                 Using filters: Min LFC ≥ {minLfc}, Adj P ≤ {maxPval} (positive LFC only)
             </div>
 
             {/* Error */}
-            {error && (
-                <div style={{ padding: '12px 16px', backgroundColor: 'rgba(239, 68, 68, 0.1)', color: '#f87171', fontSize: '0.8rem' }}>
-                    {error}
-                </div>
-            )}
+            {error && <div className="plot-error-bar">{error}</div>}
 
             {/* Plot Area */}
-            <div className="embedding-canvas" style={{ flex: 1, position: 'relative', minHeight: enrichmentData ? `${getPlotHeight()}px` : '80px' }}>
+            <div
+                className="embedding-canvas plot-canvas"
+                style={{ minHeight: enrichmentData ? `${getPlotHeight()}px` : '80px' }}
+            >
                 {loading ? (
-                    <div style={{ display: 'flex', height: '100%', alignItems: 'center', justifyContent: 'center', color: '#94a3b8' }}>
+                    <div className="plot-loading">
                         Running GO enrichment analysis...
                     </div>
                 ) : displayTerms.length > 0 ? (
@@ -1475,17 +1111,9 @@ function GOEnrichmentCard({ selectedGroup, minLfc, maxPval }) {
                         style={{ width: '100%', height: '100%' }}
                     />
                 ) : enrichmentData && enrichmentData.terms.length === 0 ? (
-                    <div style={{
-                        display: 'flex',
-                        flexDirection: 'column',
-                        height: '100%',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        color: '#94a3b8',
-                        gap: '8px'
-                    }}>
+                    <div className="plot-empty">
                         <span>No enriched GO terms found</span>
-                        <span style={{ fontSize: '0.8rem', color: '#64748b' }}>
+                        <span className="plot-empty-sub">
                             {enrichmentData.filtered_genes.length} genes passed filters
                         </span>
                     </div>

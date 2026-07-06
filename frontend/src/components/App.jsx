@@ -1,22 +1,38 @@
-import { useMemo, useState, useRef, useCallback, useEffect } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { PanelGroup, Panel, PanelResizeHandle } from "react-resizable-panels";
 import Header from "./Header.jsx";
 import ControlPanel from "./ControlPanel.jsx";
-import EmbeddingView from "./EmbeddingView.jsx";
-import DiffExprView from "./DiffExprView.jsx";
-import Drug2CellView from "./Drug2CellView.jsx";
 import AssistantPanel from "./AssistantPanel.jsx";
-import { PanelGroup, Panel, PanelResizeHandle } from "react-resizable-panels";
-import { useAssistantChat } from "../hooks/useAssistantChat.js";
 import SessionDebugPanel from "./SessionDebugPanel.jsx";
+
+// Code-split the heavy workspace views so deck.gl (~1.2 MB) and Plotly (~4.8 MB)
+// stay out of the initial bundle and load only when their tab is shown.
+const EmbeddingView = lazy(() => import("./EmbeddingView.jsx"));
+const DiffExprView = lazy(() => import("./DiffExprView.jsx"));
+const Drug2CellView = lazy(() => import("./Drug2CellView.jsx"));
+import { useAssistantChat } from "../hooks/useAssistantChat.js";
 import { useDataset } from "../hooks/useDataset.js";
 import { useEmbeddingData } from "../hooks/useEmbeddingData.js";
 import { useDraggable } from "../hooks/useDraggable.js";
+import { useViz } from "../state/VizContext.jsx";
+import { getPointCategoryLabel } from "../utils/points.js";
+import { downloadText } from "../utils/download.js";
+import BackendUnavailable from "./BackendUnavailable.jsx";
+
+const WORKSPACES = [
+  { id: "canvas", label: "Cell Panorama" },
+  { id: "deg", label: "Gene Cartography" },
+  { id: "drug2cell", label: "Drug2Cell Bridge" },
+];
 
 export default function App() {
+  const { state: viz, actions } = useViz();
   const {
     dataset,
-    resolvedDataset,
     hasBackendDataset,
+    isLoading: datasetLoading,
+    isError: datasetError,
+    retry: retryDataset,
     obsAttributes,
     geneOptions,
     embeddings,
@@ -26,440 +42,297 @@ export default function App() {
     setSelectedObs,
   } = useDataset();
 
-  const [colorMode, setColorMode] = useState("obs");
-  const [geneInput, setGeneInput] = useState("");
-  const [activeGene, setActiveGene] = useState("");
-  const [sampleFraction, setSampleFraction] = useState(0.15);
-  const [pointSize, setPointSize] = useState(2);
-  const [pointOpacity, setPointOpacity] = useState(1.0);
-  const [pointEdgeWidth, setPointEdgeWidth] = useState(0);
-  const [pointEdgeColor, setPointEdgeColor] = useState("#000000");
-  const [customCategoryColors, setCustomCategoryColors] = useState({});
-  const [selectedIds, setSelectedIds] = useState([]);
-  const [selectedPointScale, setSelectedPointScale] = useState(1.0);
-  const [unselectedPointScale, setUnselectedPointScale] = useState(1.0);
   const [chatOpen, setChatOpen] = useState(false);
-  const [activeWorkspace, setActiveWorkspace] = useState("canvas"); // "canvas", "deg", or "drug2cell"
-  // Per-obs-field visible category whitelist for categorical visualization (null/undefined => show all).
-  const [visibleCategoriesByField, setVisibleCategoriesByField] = useState({});
-
-  // Colorbar control states (for continuous color mapping)
-  const [colorScaleName, setColorScaleName] = useState("turbo");
-  const [colorRangeMin, setColorRangeMin] = useState(null);
-  const [colorRangeMax, setColorRangeMax] = useState(null);
+  const [activeWorkspace, setActiveWorkspace] = useState("canvas");
 
   const { embeddingData, embeddingLoading } = useEmbeddingData({
     hasBackendDataset,
     dataset,
     selectedEmbedding,
-    colorMode,
+    colorMode: viz.colorMode,
     selectedObs,
-    activeGene,
+    activeGene: viz.activeGene,
     obsAttributes,
-    sampleFraction,
+    sampleFraction: viz.sampleFraction,
   });
 
   const canvasRef = useRef(null);
-  const { position: buttonPos, isDragging, hasDragged, handleDragStart } = useDraggable({
+  const { position: buttonPos, isDragging, getHasDragged, handleDragStart } = useDraggable({
     initialX: 16,
     initialY: 16,
     containerRef: canvasRef,
   });
 
-  const { messages, isLoading, sendMessage } = useAssistantChat();
-  const lastAppliedFilterMessageIdRef = useRef(null);
-  const lastAppliedActionMessageIdRef = useRef(null);
-
   const handleButtonClick = useCallback(() => {
-    // Only toggle chat if we haven't dragged
-    if (!hasDragged) {
-      setChatOpen(!chatOpen);
-    }
-  }, [chatOpen, hasDragged]);
+    if (!getHasDragged()) setChatOpen((open) => !open);
+  }, [getHasDragged]);
 
-  // Handle derived effects
+  // Apply assistant annotations (categorical filters + deterministic UI actions)
+  // exactly once per new assistant message.
+  const handleAssistantMessage = useCallback(
+    (message) => {
+      const annotations = message?.annotations;
+      if (!annotations) return;
+
+      if (Array.isArray(annotations.filters) && annotations.filters.length) {
+        const grouped = {};
+        annotations.filters.forEach((filter) => {
+          const dim = String(filter?.dimension || "").trim();
+          const value = String(filter?.value || "").trim();
+          if (!dim || !value) return;
+          (grouped[dim] ||= new Set()).add(value);
+        });
+        const merged = Object.fromEntries(
+          Object.entries(grouped).map(([dim, values]) => [dim, Array.from(values)])
+        );
+        if (Object.keys(merged).length) actions.mergeVisibleCategories(merged);
+      }
+
+      if (Array.isArray(annotations.actions)) {
+        annotations.actions.forEach((action) => {
+          const type = String(action?.type || "").trim();
+          const value = String(action?.value || "").trim();
+          if (!type) return;
+          switch (type) {
+            case "set_color_mode":
+              if (value) actions.setColorMode(value);
+              break;
+            case "set_gene":
+              if (value) actions.setActiveGene(value);
+              break;
+            case "set_active_workspace":
+              if (value) setActiveWorkspace(value);
+              break;
+            case "set_embedding":
+              if (value) setSelectedEmbedding(value);
+              break;
+            default:
+              break;
+          }
+        });
+      }
+    },
+    [actions, setSelectedEmbedding]
+  );
+
+  const { messages, isLoading, sendMessage } = useAssistantChat({
+    onAssistantMessage: handleAssistantMessage,
+  });
+
+  // Reset selection whenever the underlying view or dataset changes.
   useEffect(() => {
-    setSelectedIds([]);
-  }, [selectedEmbedding, colorMode, selectedObs, activeGene, dataset, sampleFraction, visibleCategoriesByField]);
+    actions.clearSelection();
+  }, [
+    actions,
+    selectedEmbedding,
+    selectedObs,
+    dataset,
+    viz.colorMode,
+    viz.activeGene,
+    viz.sampleFraction,
+    viz.visibleCategoriesByField,
+  ]);
 
-  const getPointCategoryLabel = useCallback((point) => {
-    if (!point) return "other";
-    return point.label || point.cluster || "other";
-  }, []);
-
-  // Extract categories when in categorical mode
   const categories = useMemo(() => {
-    if (embeddingData.colorMode !== "categorical" || !embeddingData.points.length) {
-      return [];
-    }
+    if (embeddingData.colorMode !== "categorical" || !embeddingData.points.length) return [];
     const cats = new Set();
-    embeddingData.points.forEach(p => {
-      const label = getPointCategoryLabel(p);
-      cats.add(label);
-    });
+    embeddingData.points.forEach((point) => cats.add(getPointCategoryLabel(point)));
     return Array.from(cats).sort();
-  }, [embeddingData.points, embeddingData.colorMode, getPointCategoryLabel]);
+  }, [embeddingData.points, embeddingData.colorMode]);
 
   const visibleCategories = useMemo(() => {
     if (!selectedObs) return null;
-    const entry = visibleCategoriesByField[selectedObs];
+    const entry = viz.visibleCategoriesByField[selectedObs];
     return entry === undefined ? null : entry;
-  }, [visibleCategoriesByField, selectedObs]);
+  }, [viz.visibleCategoriesByField, selectedObs]);
 
   const filteredEmbeddingPoints = useMemo(() => {
     if (embeddingData.colorMode !== "categorical") return embeddingData.points;
-    if (!Array.isArray(embeddingData.points) || !embeddingData.points.length) return embeddingData.points;
+    if (!Array.isArray(embeddingData.points) || !embeddingData.points.length) {
+      return embeddingData.points;
+    }
     if (visibleCategories === null) return embeddingData.points;
-
     const allowed = new Set(Array.isArray(visibleCategories) ? visibleCategories.map(String) : []);
-    return embeddingData.points.filter((p) => allowed.has(String(getPointCategoryLabel(p))));
-  }, [embeddingData.points, embeddingData.colorMode, visibleCategories, getPointCategoryLabel]);
+    return embeddingData.points.filter((point) =>
+      allowed.has(String(getPointCategoryLabel(point)))
+    );
+  }, [embeddingData.points, embeddingData.colorMode, visibleCategories]);
 
-  // Extract data range when in continuous mode
   const dataValueRange = useMemo(() => {
     if (embeddingData.colorMode !== "continuous" || !embeddingData.points.length) {
       return { min: null, max: null };
     }
     const values = embeddingData.points
-      .map(p => (typeof p.value === "number" ? p.value : null))
-      .filter(v => v !== null && Number.isFinite(v));
-    if (!values.length) {
-      return { min: null, max: null };
-    }
-    return {
-      min: Math.min(...values),
-      max: Math.max(...values),
-    };
+      .map((point) => (typeof point.value === "number" ? point.value : null))
+      .filter((value) => value !== null && Number.isFinite(value));
+    if (!values.length) return { min: null, max: null };
+    return { min: Math.min(...values), max: Math.max(...values) };
   }, [embeddingData.points, embeddingData.colorMode]);
 
-  // Extract default category colors from backend attributes
   const defaultCategoryColors = useMemo(() => {
-    if (colorMode !== "obs" || !selectedObs || !obsAttributes) return {};
-    const attr = obsAttributes.find(a => a.name === selectedObs);
+    if (viz.colorMode !== "obs" || !selectedObs || !obsAttributes) return {};
+    const attr = obsAttributes.find((attribute) => attribute.name === selectedObs);
     return attr?.colors || {};
-  }, [colorMode, selectedObs, obsAttributes]);
-
-  // Apply assistant-provided filters as a categorical visibility whitelist (frontend-only visualization).
-  useEffect(() => {
-    const last = [...messages]
-      .reverse()
-      .find((m) => m?.role === "assistant" && Array.isArray(m?.annotations?.filters) && m.annotations.filters.length);
-    if (!last) return;
-    if (lastAppliedFilterMessageIdRef.current === last.id) return;
-
-    const grouped = new Map();
-    last.annotations.filters.forEach((f) => {
-      const dim = String(f?.dimension || "").trim();
-      const value = String(f?.value || "").trim();
-      if (!dim || !value) return;
-      if (!grouped.has(dim)) grouped.set(dim, new Set());
-      grouped.get(dim).add(value);
-    });
-
-    if (grouped.size) {
-      setVisibleCategoriesByField((prev) => {
-        const next = { ...(prev || {}) };
-        grouped.forEach((values, dim) => {
-          next[dim] = Array.from(values);
-        });
-        return next;
-      });
-    }
-
-    lastAppliedFilterMessageIdRef.current = last.id;
-  }, [messages]);
-
-  // Apply assistant-provided actions to control the UI deterministically.
-  useEffect(() => {
-    const last = [...messages]
-      .reverse()
-      .find((m) => m?.role === "assistant" && Array.isArray(m?.annotations?.actions) && m.annotations.actions.length);
-    if (!last) return;
-    if (lastAppliedActionMessageIdRef.current === last.id) return;
-
-    const actions = last.annotations.actions;
-    actions.forEach((action) => {
-      const type = String(action?.type || "").trim();
-      const value = String(action?.value || "").trim();
-      if (!type) return;
-
-      switch (type) {
-        case "set_color_mode":
-          if (value) setColorMode(value);
-          return;
-        case "set_gene":
-          if (!value) return;
-          setActiveGene(value);
-          setGeneInput(value);
-          return;
-        case "set_active_workspace":
-          if (value) setActiveWorkspace(value);
-          return;
-        case "set_embedding":
-          if (value) setSelectedEmbedding(value);
-          return;
-        default:
-          return;
-      }
-    });
-
-    lastAppliedActionMessageIdRef.current = last.id;
-  }, [messages]);
+  }, [viz.colorMode, selectedObs, obsAttributes]);
 
   const datasetContext = useMemo(
     () => ({
       datasetId: dataset?.id,
       activeEmbedding: selectedEmbedding || dataset?.activeEmbedding,
-      colorMode,
-      colorSelection: colorMode === "gene" ? activeGene : selectedObs,
+      colorMode: viz.colorMode,
+      colorSelection: viz.colorMode === "gene" ? viz.activeGene : selectedObs,
       embedding: selectedEmbedding,
-      sampleFraction,
-      pointSize,
-      pointOpacity,
-      pointEdgeWidth,
-      pointEdgeColor,
-      selectedIds,
+      sampleFraction: viz.sampleFraction,
+      pointSize: viz.pointSize,
+      pointOpacity: viz.pointOpacity,
+      pointEdgeWidth: viz.pointEdgeWidth,
+      pointEdgeColor: viz.pointEdgeColor,
+      selectedIds: viz.selectedIds,
     }),
-    [dataset, colorMode, activeGene, selectedObs, selectedEmbedding, sampleFraction, pointSize, pointOpacity, pointEdgeWidth, pointEdgeColor, selectedIds]
+    [
+      dataset,
+      selectedEmbedding,
+      selectedObs,
+      viz.colorMode,
+      viz.activeGene,
+      viz.sampleFraction,
+      viz.pointSize,
+      viz.pointOpacity,
+      viz.pointEdgeWidth,
+      viz.pointEdgeColor,
+      viz.selectedIds,
+    ]
   );
 
-  const handleGeneApply = (value) => {
-    const nextValue = typeof value === "string" ? value : geneInput;
-    const trimmed = nextValue.trim();
-    if (!trimmed) return;
-    setActiveGene(trimmed);
-    setGeneInput(trimmed);
-    setColorMode("gene");
-  };
+  const handleDownloadSelection = useCallback(() => {
+    if (!viz.selectedIds.length) return;
+    const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, "-");
+    downloadText(viz.selectedIds.join("\n"), `selected_cells_${timestamp}.txt`);
+  }, [viz.selectedIds]);
 
-  const handleEmbeddingSelect = (value) => {
-    if (!value) return;
-    setSelectedEmbedding(value);
-  };
+  const handleViewGene = useCallback(
+    (gene) => {
+      const match = geneOptions?.find(
+        (opt) =>
+          (opt.name && opt.name.toLowerCase() === gene.toLowerCase()) ||
+          (opt.symbol && opt.symbol.toLowerCase() === gene.toLowerCase())
+      );
+      actions.applyGene(match ? match.symbol || match.name : gene);
+      setActiveWorkspace("canvas");
+    },
+    [geneOptions, actions]
+  );
 
-  const handleSampleFractionChange = (value) => {
-    const numeric = Math.max(0.05, Math.min(1, value));
-    setSampleFraction(parseFloat(numeric.toFixed(2)));
-  };
+  const handleViewSignature = useCallback(
+    (signatureName) => {
+      setSelectedObs(`score_${signatureName}`);
+      actions.setColorMode("obs");
+      setActiveWorkspace("canvas");
+    },
+    [setSelectedObs, actions]
+  );
 
-  const handlePointSizeChange = (value) => {
-    const numeric = Math.max(1, Math.min(10, value));
-    setPointSize(numeric);
-  };
+  const handleSelectObs = useCallback(
+    (value) => {
+      setSelectedObs(value);
+      if (viz.colorMode !== "gene") actions.setColorMode("obs");
+    },
+    [setSelectedObs, viz.colorMode, actions]
+  );
 
-  const handlePointOpacityChange = (value) => {
-    const numeric = Math.max(0.1, Math.min(1, value));
-    setPointOpacity(parseFloat(numeric.toFixed(1)));
-  };
-
-  const handlePointEdgeWidthChange = (value) => {
-    const numeric = Math.max(0, Math.min(2, value));
-    setPointEdgeWidth(parseFloat(numeric.toFixed(1)));
-  };
-
-  const handlePointEdgeColorChange = (value) => {
-    setPointEdgeColor(value);
-  };
-
-  const handleColorScaleChange = (value) => {
-    setColorScaleName(value);
-  };
-
-  const handleColorRangeChange = (min, max) => {
-    setColorRangeMin(min);
-    setColorRangeMax(max);
-  };
-
-  const handleResetColorRange = () => {
-    setColorRangeMin(null);
-    setColorRangeMax(null);
-  };
-
-  const handleDownloadSelection = async () => {
-    if (!selectedIds.length) return;
-
-    try {
-      // Build the text file content
-      const content = selectedIds.join('\n');
-      const timestamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
-      const filename = `selected_cells_${timestamp}.txt`;
-
-      // Create and download the file
-      const blob = new Blob([content], { type: 'text/plain' });
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.download = filename;
-      document.body.appendChild(anchor);
-      anchor.click();
-      document.body.removeChild(anchor);
-      URL.revokeObjectURL(url);
-
-      console.log(`Saved ${selectedIds.length} cell IDs to ${filename}`);
-    } catch (error) {
-      console.error('Failed to download cell IDs:', error);
-    }
-  };
-
-  const handleSelectionChange = (ids) => {
-    setSelectedIds(ids);
-  };
-
-  const handleViewGene = (gene) => {
-    // Robustly find the matching gene in options to ensure UI consistency
-    const match = geneOptions?.find(opt =>
-      (opt.name && opt.name.toLowerCase() === gene.toLowerCase()) ||
-      (opt.symbol && opt.symbol.toLowerCase() === gene.toLowerCase())
-    );
-
-    const canonicalName = match ? (match.symbol || match.name) : gene;
-
-    setActiveGene(canonicalName);
-    setGeneInput(canonicalName);
-    setColorMode("gene");
-    setActiveWorkspace("canvas");
-  };
-
-  const handleViewSignature = (signatureName) => {
-    // When viewing a signature score in embedding, we use the obs column that 
-    // sc.tl.score_genes created (e.g., "score_signature")
-    const scoreColumn = `score_${signatureName}`;
-    setSelectedObs(scoreColumn);
-    setColorMode("obs");
-    setActiveWorkspace("canvas");
-  };
+  const handleSwitchObsDimension = useCallback(
+    (dim) => {
+      if (!dim) return;
+      setSelectedObs(dim);
+      actions.setColorMode("obs");
+      setActiveWorkspace("canvas");
+    },
+    [setSelectedObs, actions]
+  );
 
   return (
     <div className="app-shell">
       {import.meta.env.DEV && <SessionDebugPanel />}
       <Header />
-      <PanelGroup direction="horizontal" className="layout-root">
+      {datasetError ? (
+        <BackendUnavailable onRetry={retryDataset} />
+      ) : datasetLoading ? (
+        <div className="app-status">Loading dataset…</div>
+      ) : (
+        <>
+          <PanelGroup direction="horizontal" className="layout-root">
         <Panel defaultSize={22} minSize={16} collapsible>
           <ControlPanel
             embeddings={embeddings}
             selectedEmbedding={selectedEmbedding}
-            onSelectEmbedding={handleEmbeddingSelect}
+            onSelectEmbedding={setSelectedEmbedding}
             obsAttributes={obsAttributes}
-            colorMode={colorMode}
-            onColorModeChange={setColorMode}
             selectedObs={selectedObs}
-            onSelectObs={(value) => {
-              setSelectedObs(value);
-              if (colorMode !== "gene") setColorMode("obs");
-            }}
-            geneInput={geneInput}
-            onGeneInputChange={setGeneInput}
-            onApplyGene={handleGeneApply}
-            activeGene={activeGene}
+            onSelectObs={handleSelectObs}
             geneOptions={geneOptions}
-            sampleFraction={sampleFraction}
-            onSampleFractionChange={handleSampleFractionChange}
-            pointSize={pointSize}
-            onPointSizeChange={handlePointSizeChange}
-            pointOpacity={pointOpacity}
-            onPointOpacityChange={handlePointOpacityChange}
-            pointEdgeWidth={pointEdgeWidth}
-            onPointEdgeWidthChange={handlePointEdgeWidthChange}
-            pointEdgeColor={pointEdgeColor}
-            onPointEdgeColorChange={handlePointEdgeColorChange}
+            dataset={dataset}
             categories={categories}
             visibleCategories={visibleCategories}
-            onVisibleCategoriesChange={(nextVisible) => {
-              if (!selectedObs) return;
-              setVisibleCategoriesByField((prev) => ({
-                ...(prev || {}),
-                [selectedObs]: nextVisible,
-              }));
-            }}
             defaultCategoryColors={defaultCategoryColors}
-            customCategoryColors={customCategoryColors}
-            onCustomCategoryColorChange={setCustomCategoryColors}
-            dataset={resolvedDataset}
-            selectedIds={selectedIds}
-            onDownloadSelection={handleDownloadSelection}
-            selectedPointScale={selectedPointScale}
-            onSelectedPointScaleChange={setSelectedPointScale}
-            unselectedPointScale={unselectedPointScale}
-            onUnselectedPointScaleChange={setUnselectedPointScale}
-            colorScaleName={colorScaleName}
-            onColorScaleChange={handleColorScaleChange}
-            colorRangeMin={colorRangeMin}
-            colorRangeMax={colorRangeMax}
-            onColorRangeChange={handleColorRangeChange}
-            onResetColorRange={handleResetColorRange}
             isContinuousMode={embeddingData.colorMode === "continuous"}
             dataValueRange={dataValueRange}
+            onDownloadSelection={handleDownloadSelection}
           />
         </Panel>
         <PanelResizeHandle className="resize-handle vertical" />
         <Panel defaultSize={78} minSize={50}>
-          <div className="canvas-workspace" ref={canvasRef} style={{ display: 'flex', flexDirection: 'column' }}>
+          <div
+            className="canvas-workspace"
+            ref={canvasRef}
+            style={{ display: "flex", flexDirection: "column" }}
+          >
             <div className="workspace-tabs">
-              <button
-                className={`workspace-tab ${activeWorkspace === "canvas" ? "active" : ""}`}
-                onClick={() => setActiveWorkspace("canvas")}
-              >
-                Cell Panorama
-              </button>
-              <button
-                className={`workspace-tab ${activeWorkspace === "deg" ? "active" : ""}`}
-                onClick={() => setActiveWorkspace("deg")}
-              >
-                Gene Cartography
-              </button>
-              <button
-                className={`workspace-tab ${activeWorkspace === "drug2cell" ? "active" : ""}`}
-                onClick={() => setActiveWorkspace("drug2cell")}
-              >
-                Drug2Cell Bridge
-              </button>
+              {WORKSPACES.map((workspace) => (
+                <button
+                  key={workspace.id}
+                  className={`workspace-tab ${activeWorkspace === workspace.id ? "active" : ""}`}
+                  onClick={() => setActiveWorkspace(workspace.id)}
+                >
+                  {workspace.label}
+                </button>
+              ))}
             </div>
 
             <div className="workspace-content">
-              {activeWorkspace === "canvas" ? (
-                <div className="embedding-pane full-height">
-                  <EmbeddingView
-                    embeddingName={embeddingData.embeddingName || selectedEmbedding || resolvedDataset.activeEmbedding}
-                    points={filteredEmbeddingPoints}
-                    totalCells={embeddingData.totalCells}
-                    colorMode={embeddingData.colorMode}
-                    loading={embeddingLoading}
-                    dimensions={embeddingData.dimensions}
-                    pointSize={pointSize}
-                    pointOpacity={pointOpacity}
-                    pointEdgeWidth={pointEdgeWidth}
-                    pointEdgeColor={pointEdgeColor}
-                    defaultCategoryColors={defaultCategoryColors}
-                    customCategoryColors={customCategoryColors}
-                    onSelectionChange={handleSelectionChange}
-                    selectedIds={selectedIds}
-                    selectedPointScale={selectedPointScale}
-                    unselectedPointScale={unselectedPointScale}
-                    colorScaleName={colorScaleName}
-                    colorRangeMin={colorRangeMin}
-                    colorRangeMax={colorRangeMax}
+              <Suspense
+                fallback={<div className="workspace-loading">Loading workspace…</div>}
+              >
+                {activeWorkspace === "canvas" ? (
+                  <div className="embedding-pane full-height">
+                    <EmbeddingView
+                      embeddingName={
+                        embeddingData.embeddingName ||
+                        selectedEmbedding ||
+                        dataset?.activeEmbedding
+                      }
+                      points={filteredEmbeddingPoints}
+                      totalCells={embeddingData.totalCells}
+                      colorMode={embeddingData.colorMode}
+                      loading={embeddingLoading}
+                      dimensions={embeddingData.dimensions}
+                      defaultCategoryColors={defaultCategoryColors}
+                    />
+                  </div>
+                ) : activeWorkspace === "deg" ? (
+                  <DiffExprView
+                    onViewGene={handleViewGene}
+                    obsAttributes={obsAttributes}
+                    onViewSignature={handleViewSignature}
                   />
-                </div>
-              ) : activeWorkspace === "deg" ? (
-                <DiffExprView
-                  selectedIds={selectedIds}
-                  onViewGene={handleViewGene}
-                  obsAttributes={obsAttributes}
-                  onViewSignature={handleViewSignature}
-                />
-              ) : (
-                <Drug2CellView
-                  obsAttributes={obsAttributes}
-                />
-              )}
+                ) : (
+                  <Drug2CellView obsAttributes={obsAttributes} />
+                )}
+              </Suspense>
 
-              {/* Draggable Chat Toggle Button - keep it in workspace */}
+              {/* Draggable Chat Toggle Button - kept inside the workspace */}
               <button
                 className={`chat-toggle-btn ${chatOpen ? "open" : ""} ${isDragging ? "dragging" : ""}`}
-                style={{
-                  left: buttonPos.x,
-                  bottom: buttonPos.y,
-                }}
+                style={{ left: buttonPos.x, bottom: buttonPos.y }}
                 onMouseDown={handleDragStart}
                 onTouchStart={handleDragStart}
                 onClick={handleButtonClick}
@@ -467,11 +340,25 @@ export default function App() {
               >
                 <span className="chat-toggle-icon">
                   {chatOpen ? (
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <svg
+                      width="24"
+                      height="24"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                    >
                       <path d="M18 6L6 18M6 6l12 12" />
                     </svg>
                   ) : (
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <svg
+                      width="24"
+                      height="24"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                    >
                       <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z" />
                     </svg>
                   )}
@@ -483,13 +370,11 @@ export default function App() {
         </Panel>
       </PanelGroup>
 
-      {/* Chat Drawer Overlay */}
+      {/* Chat Drawer */}
       <div
         className={`chat-drawer-overlay ${chatOpen ? "visible" : ""}`}
         onClick={() => setChatOpen(false)}
       />
-
-      {/* Chat Drawer */}
       <div className={`chat-drawer ${chatOpen ? "open" : ""}`}>
         <AssistantPanel
           messages={messages}
@@ -497,15 +382,12 @@ export default function App() {
           onSend={sendMessage}
           datasetContext={datasetContext}
           activeObsDimension={selectedObs}
-          onSwitchObsDimension={(dim) => {
-            if (!dim) return;
-            setSelectedObs(dim);
-            setColorMode("obs");
-            setActiveWorkspace("canvas");
-          }}
+          onSwitchObsDimension={handleSwitchObsDimension}
           onClose={() => setChatOpen(false)}
         />
       </div>
+        </>
+      )}
     </div>
   );
 }

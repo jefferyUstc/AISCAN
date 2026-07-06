@@ -2,13 +2,19 @@ import PropTypes from "prop-types";
 import { useEffect, useMemo, useRef } from "react";
 import MarkdownMessage from "./MarkdownMessage.jsx";
 
-function MessageAnnotations({ annotations, activeObsDimension, onSwitchObsDimension }) {
+const EMPTY_ARRAY = [];
+
+function MessageAnnotations({
+  annotations = null,
+  activeObsDimension = null,
+  onSwitchObsDimension = null,
+}) {
   const title = typeof annotations?.title === "string" ? annotations.title.trim() : "";
   const summary = typeof annotations?.summary === "string" ? annotations.summary.trim() : "";
   const citations = Array.isArray(annotations?.citations)
     ? annotations.citations.filter(Boolean).map((item) => String(item))
     : [];
-  const filters = Array.isArray(annotations?.filters) ? annotations.filters : [];
+  const filters = Array.isArray(annotations?.filters) ? annotations.filters : EMPTY_ARRAY;
   const filterDimensions = useMemo(() => {
     const dims = new Set();
     filters.forEach((f) => {
@@ -102,12 +108,12 @@ function MessageAnnotations({ annotations, activeObsDimension, onSwitchObsDimens
 
 export default function AssistantPanel({
   messages,
-  isLoading,
+  isLoading = false,
   onSend,
-  datasetContext,
-  onClose,
-  activeObsDimension,
-  onSwitchObsDimension,
+  datasetContext = null,
+  onClose = null,
+  activeObsDimension = null,
+  onSwitchObsDimension = null,
 }) {
   const placeholder = useMemo(() => {
     if (!datasetContext?.datasetId) return "Ask about your dataset";
@@ -219,12 +225,6 @@ MessageAnnotations.propTypes = {
   onSwitchObsDimension: PropTypes.func,
 };
 
-MessageAnnotations.defaultProps = {
-  annotations: null,
-  activeObsDimension: null,
-  onSwitchObsDimension: null,
-};
-
 AssistantPanel.propTypes = {
   messages: PropTypes.arrayOf(
     PropTypes.shape({
@@ -253,12 +253,4 @@ AssistantPanel.propTypes = {
   onClose: PropTypes.func,
   activeObsDimension: PropTypes.string,
   onSwitchObsDimension: PropTypes.func,
-};
-
-AssistantPanel.defaultProps = {
-  isLoading: false,
-  datasetContext: null,
-  onClose: null,
-  activeObsDimension: null,
-  onSwitchObsDimension: null,
 };
