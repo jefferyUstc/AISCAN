@@ -232,9 +232,7 @@ def main():
                         help=f"Overlap between chunks (default: {settings.rag.chunk_overlap})")
     
     args = parser.parse_args()
-    
-    args = parser.parse_args()
-    
+
     initializer = KnowledgeBaseInitializer(
         knowledge_dir=args.knowledge_dir,
         vector_db_dir=args.vector_db_dir
@@ -267,10 +265,7 @@ def main():
     elif result['status'] == 'error':
         print(f"Error: {result['error']}")
         sys.exit(1)
-    
-        print(f"Error: {result['error']}")
-        sys.exit(1)
-    
+
     if args.test and result['status'] == 'success':
         print("\n=== Testing Retrieval System ===")
         test_result = initializer.test_retrieval()

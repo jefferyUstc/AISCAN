@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import functools
 import json
 import copy
+import logging
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable, List, Optional, Dict, Tuple
+from typing import Any, List, Optional, Dict, Tuple
 import re
 
 import anndata as ad
@@ -14,17 +17,19 @@ import pandas as pd
 from pandas import Series
 from scipy import sparse
 
-from scipy import sparse
 import h5py
+
+logger = logging.getLogger(__name__)
 
 try:
     import anndata._io.specs.registry as _reg
     from anndata._io.specs.registry import IOSpec
     _reg._REGISTRY.register_read(h5py.Dataset, IOSpec("null", "0.1.0"))(lambda *a, **kw: None)
-except Exception:
-    pass
+except (ImportError, AttributeError) as exc:
+    logger.warning("Could not patch AnnData IO registry for h5py.Dataset: %s", exc)
 
 from .config import get_settings
+from .errors import NotFoundError
 from .models import (
     DatasetOptionsResponse,
     DatasetOverview,
@@ -52,6 +57,23 @@ def _normalize_token(value: str) -> str:
     return value.lower().replace("-", " ").replace("_", " ").strip()
 
 
+def _synchronized(method):
+    """Run a public store method with its body held under ``self._lock``.
+
+    The store is a process-wide singleton served from a threadpool, so every
+    public method that reads or writes ``self.adata`` is serialized. The lock
+    is reentrant (``RLock``) so a public method may call another public method
+    without deadlocking.
+    """
+
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+
+    return wrapper
+
+
 @dataclass
 class DatasetStore:
     path: Path
@@ -67,6 +89,7 @@ class DatasetStore:
     
     _drug2cell_use_raw: Optional[bool] = None
     _drug2cell_rank_cache: Dict[Tuple[str, Optional[bool]], Dict] = field(default_factory=dict)
+    _lock: "threading.RLock" = field(default_factory=threading.RLock, repr=False, compare=False)
 
     @classmethod
     def load(cls, path: Path) -> "DatasetStore":
@@ -80,9 +103,6 @@ class DatasetStore:
         obs_attributes = cls._collect_obs_attributes(data)
         gene_lookup, gene_options = cls._build_gene_catalog(data)
         embeddings = cls._available_embeddings(data)
-
-        if "rank_genes_groups" in data.uns:
-            pass
 
         from .config.paths import Paths
         
@@ -314,7 +334,7 @@ class DatasetStore:
             if key.startswith("X_") and key[2:].lower() == lowered:
                 return key
 
-        raise ValueError(f"Embedding {target} not found in AnnData")
+        raise NotFoundError(f"Embedding {target} not found in AnnData")
 
     @classmethod
     def _compute_obs_stats(cls, data: ad.AnnData) -> Dict[str, Any]:
@@ -378,46 +398,10 @@ class DatasetStore:
         return DatasetResponse(dataset=overview, activeFilters=[])
 
     @staticmethod
-    def _resolve_default_embedding(data: ad.AnnData) -> str:
-        if "X_umap" in data.obsm:
-            return "umap"
-        if "X_tsne" in data.obsm:
-            return "tsne"
-        if "X_pca" in data.obsm:
-            return "pca"
-        return "embedding"
-
-    @staticmethod
     def _to_dense(array) -> np.ndarray:
         if sparse.issparse(array):
             return array.toarray()
         return np.asarray(array)
-
-    @classmethod
-    def _summaries(
-        cls,
-        data: ad.AnnData,
-        *,
-        conditions: Iterable[str],
-        clusters: Iterable[str],
-    ) -> List[dict]:
-        metrics: List[dict] = []
-
-        if "n_genes" in data.obs:
-            metrics.append({"label": "Median features", "value": round(float(data.obs["n_genes"].median()))})
-
-        if "condition" in data.obs:
-            metrics.append({"label": "Conditions", "value": len(list(conditions))})
-
-        if "replicate" in data.obs:
-            metrics.append({"label": "Replicates", "value": int(data.obs["replicate"].nunique())})
-
-        if "leiden" in data.obs:
-            metrics.append({"label": "Clusters", "value": len(list(clusters))})
-
-        metrics.append({"label": "Total cells", "value": int(data.n_obs)})
-        metrics.append({"label": "Features", "value": int(data.n_vars)})
-        return metrics
 
     def _mask_for_filters(self, filters: Optional[List[Filter]]) -> Optional[np.ndarray]:
         if not filters:
@@ -427,7 +411,7 @@ class DatasetStore:
         for filter_ in filters:
             column = obs_df.get(filter_.dimension)
             if column is None:
-                continue
+                raise NotFoundError(f"Unknown filter dimension: {filter_.dimension}")
             comparison = column.astype(str).str.lower()
             mask &= comparison == filter_.value.lower()
         return mask
@@ -447,9 +431,6 @@ class DatasetStore:
         match = self.gene_lookup.get(key)
         if match:
             return match
-        for name, payload in self.gene_lookup.items():
-            if key in name:
-                return payload
         return None, query
 
     def _expression_values(self, gene_index: int, mask: Optional[np.ndarray]) -> np.ndarray:
@@ -469,10 +450,12 @@ class DatasetStore:
         np.random.seed(settings.dataset_display.random_seed)
         return np.sort(np.random.choice(total, size=limit, replace=False))
 
+    @_synchronized
     def get_overview(self) -> DatasetResponse:
         """Get the dataset overview including statistics and metadata."""
         return self.overview
 
+    @_synchronized
     def get_options(self) -> DatasetOptionsResponse:
         """Get the available configuration options for the dataset (filters, genes, embeddings)."""
         return DatasetOptionsResponse(
@@ -481,6 +464,7 @@ class DatasetStore:
             embeddings=self.embeddings,
         )
 
+    @_synchronized
     def verify_filters(self, candidates: List[Filter]) -> List[Filter]:
         """
         Verify if the proposed filters (dimension/value) exist in the dataset.
@@ -558,6 +542,7 @@ class DatasetStore:
             
         return valid
 
+    @_synchronized
     def verify_genes(self, candidates: List[str]) -> Dict[str, List[str]]:
         """
         Verify candidate gene names against the dataset's gene catalog (adata.var_names).
@@ -589,6 +574,7 @@ class DatasetStore:
 
         return {"found": found, "not_found": not_found}
 
+    @_synchronized
     def verify_embeddings(self, candidates: List[str]) -> Dict[str, List[str]]:
         """
         Verify candidate embedding names against available embeddings in the dataset.
@@ -624,6 +610,7 @@ class DatasetStore:
 
         return {"found": found, "not_found": not_found}
 
+    @_synchronized
     def get_embedding(
         self,
         limit: Optional[int] = None,
@@ -650,7 +637,7 @@ class DatasetStore:
         embedding_key = self._embedding_key(resolved_embedding)
         matrix = self.adata.obsm.get(embedding_key)
         if matrix is None:
-            raise ValueError(f"Embedding {resolved_embedding} not found in AnnData")
+            raise NotFoundError(f"Embedding {resolved_embedding} not found in AnnData")
 
         mask = self._mask_for_filters(filters)
         if mask is not None:
@@ -752,6 +739,7 @@ class DatasetStore:
             dimensions=dims,
         )
 
+    @_synchronized
     def get_deg_groups(self) -> List[str]:
         if "rank_genes_groups" not in self.adata.uns:
             return []
@@ -770,6 +758,7 @@ class DatasetStore:
         
         return []
 
+    @_synchronized
     def get_deg_data(self, group: str) -> DegResponse:
         """
         Get differentially expressed genes for a specific group.
@@ -854,6 +843,7 @@ class DatasetStore:
             
         return DegResponse(groups=groups, currentGroup=group, genes=genes)
 
+    @_synchronized
     def get_gene_expression_by_group(self, gene: str, groupby: Optional[str] = None) -> GeneExpressionResponse:
         """
         Get gene expression values grouped by an observation column.
@@ -864,7 +854,7 @@ class DatasetStore:
         """
         idx, display = self._resolve_gene(gene)
         if idx is None:
-             raise ValueError(f"Gene {gene} not found")
+             raise NotFoundError(f"Gene {gene} not found")
         
         if groupby is None:
             if "rank_genes_groups" in self.adata.uns and "params" in self.adata.uns["rank_genes_groups"]:
@@ -876,7 +866,7 @@ class DatasetStore:
              raise ValueError("Grouping information not found in analysis params. Cannot determine groups for plot.")
 
         if groupby not in self.adata.obs:
-             raise ValueError(f"Group by column '{groupby}' not found in dataset.")
+             raise NotFoundError(f"Group by column '{groupby}' not found in dataset.")
         
         groups = self.adata.obs[groupby].astype(str)
         values = self._expression_values(idx, mask=None)
@@ -894,6 +884,7 @@ class DatasetStore:
             
         return GeneExpressionResponse(gene=display or gene, points=points)
 
+    @_synchronized
     def get_categorical_obs_columns(self) -> List[str]:
         """Return list of categorical observation columns suitable for grouping."""
         categorical_cols = []
@@ -902,6 +893,7 @@ class DatasetStore:
                 categorical_cols.append(attr.name)
         return categorical_cols
 
+    @_synchronized
     def get_gene_signature_violin(
         self,
         genes: List[str],
@@ -922,7 +914,7 @@ class DatasetStore:
         import scanpy as sc
         
         if groupby not in self.adata.obs:
-            raise ValueError(f"Group by column '{groupby}' not found in dataset.")
+            raise NotFoundError(f"Group by column '{groupby}' not found in dataset.")
         
         genes_found = []
         genes_not_found = []
@@ -974,6 +966,7 @@ class DatasetStore:
             points=points
         )
 
+    @_synchronized
     def get_go_enrichment(
         self,
         group: str,
@@ -1117,6 +1110,7 @@ class DatasetStore:
             terms=terms
         )
 
+    @_synchronized
     def get_drug2cell_status(self) -> Drug2CellStatusResponse:
         """Get current Drug2Cell computation status."""
         if 'drug2cell' in self.adata.uns:
@@ -1131,6 +1125,7 @@ class DatasetStore:
             use_raw=None
         )
 
+    @_synchronized
     def compute_drug2cell_score(self, use_raw: bool = True) -> Drug2CellStatusResponse:
         """
         Compute drug2cell scores for cells.
@@ -1153,6 +1148,7 @@ class DatasetStore:
             use_raw=use_raw
         )
 
+    @_synchronized
     def get_drug2cell_dotplot(
         self,
         groupby: str,
@@ -1178,7 +1174,7 @@ class DatasetStore:
         d2c_adata = self.adata.uns['drug2cell']
         
         if split_by and split_by not in d2c_adata.obs:
-            raise ValueError(f"Split by column '{split_by}' not found in dataset.")
+            raise NotFoundError(f"Split by column '{split_by}' not found in dataset.")
         
         cache_key = (groupby, self._drug2cell_use_raw)
 
@@ -1291,12 +1287,9 @@ class DatasetStore:
                 score_matrix[g_idx, d_idx] = g_scores.get(drug, 0.0)
 
         from scipy.cluster.hierarchy import linkage, leaves_list
-        
-        if n_drugs >= 2:
-            drug_linkage = linkage(score_matrix.T, method='average', metric='euclidean')
-            drug_order = leaves_list(drug_linkage)
-            drug_order = np.arange(n_drugs)
-        
+
+        drug_order = np.arange(n_drugs)
+
         if split_by and ordered_split_groups:
             group_order = [list(unique_groups).index(g) for g in ordered_split_groups if g in unique_groups]
             group_order = np.array(group_order)
@@ -1338,6 +1331,7 @@ class DatasetStore:
     def _get_pathways_dir(self) -> Path:
         return Path(__file__).parent / "pathways_DBs"
 
+    @_synchronized
     def get_pathway_categories(self) -> List[str]:
         """List available pathway database files."""
         p_dir = self._get_pathways_dir()
@@ -1350,11 +1344,12 @@ class DatasetStore:
                 categories.append(f.name)
         return sorted(categories)
 
+    @_synchronized
     def get_pathways_in_category(self, category_file: str) -> List[str]:
         """List pathway names within a specific category file."""
         p_path = self._get_pathways_dir() / category_file
         if not p_path.exists():
-             raise ValueError(f"Category {category_file} not found")
+             raise NotFoundError(f"Category {category_file} not found")
         
         pathways = []
         try:
@@ -1368,11 +1363,12 @@ class DatasetStore:
             
         return pathways
 
+    @_synchronized
     def get_genes_in_pathway(self, category_file: str, pathway_name: str) -> List[str]:
         """Get list of genes for a specific pathway."""
         p_path = self._get_pathways_dir() / category_file
         if not p_path.exists():
-            raise ValueError(f"Category {category_file} not found")
+            raise NotFoundError(f"Category {category_file} not found")
             
         try:
             with open(p_path, 'r', encoding='utf-8') as f:
@@ -1385,4 +1381,4 @@ class DatasetStore:
         except Exception as e:
             raise ValueError(f"Failed to read pathway file: {e}")
             
-        raise ValueError(f"Pathway {pathway_name} not found in {category_file}")
+        raise NotFoundError(f"Pathway {pathway_name} not found in {category_file}")

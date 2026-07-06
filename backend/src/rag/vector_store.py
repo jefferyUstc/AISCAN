@@ -117,21 +117,16 @@ class VectorStore:
         """
         if include is None:
             include = ["documents", "metadatas", "distances"]
-        
-        try:
-            results = self.collection.query(
-                query_embeddings=[query_embedding],
-                n_results=min(n_results, self.collection.count()),
-                where=where,
-                include=include
-            )
-            
-            logger.debug(f"Search returned {len(results.get('documents', [[]])[0])} results")
-            return results
-            
-        except Exception as e:
-            logger.error(f"Search failed: {e}")
-            return {"documents": [[]], "metadatas": [[]], "distances": [[]]}
+
+        results = self.collection.query(
+            query_embeddings=[query_embedding],
+            n_results=min(n_results, self.collection.count()),
+            where=where,
+            include=include
+        )
+
+        logger.debug(f"Search returned {len(results.get('documents', [[]])[0])} results")
+        return results
     
     def search_by_text(self,
                       query_text: str,
@@ -151,99 +146,52 @@ class VectorStore:
         Returns:
             List of search result dictionaries
         """
-        try:
-            query_embedding = embedding_service.encode_text(query_text)
-            
-            initial_top_k = n_results * 4 if rerank else n_results
-            
-            results = self.search(
-                query_embedding=query_embedding,
-                n_results=initial_top_k,
-                where=where
-            )
-            
-            formatted_results = []
-            documents = results.get("documents", [[]])[0]
-            metadatas = results.get("metadatas", [[]])[0]
-            distances = results.get("distances", [[]])[0]
-            
-            for doc, metadata, distance in zip(documents, metadatas, distances):
-                processed_metadata = metadata.copy()
-                for key in ["genes", "cell_types", "methods", "pathways", "topics"]:
-                    if key in processed_metadata and processed_metadata[key]:
-                        processed_metadata[key] = [item.strip() for item in processed_metadata[key].split(",") if item.strip()]
-                    else:
-                        processed_metadata[key] = []
-                
-                formatted_results.append({
-                    "content": doc,
-                    "metadata": processed_metadata,
-                    "distance": float(distance)
-                })
-            
-            if rerank and formatted_results:
-                from .reranker import get_reranker
-                reranker = get_reranker()
-                formatted_results = reranker.rank(query_text, formatted_results, top_k=n_results)
-                
-                for res in formatted_results:
-                    if "similarity_score" in res:
-                        res["similarity_score"] = float(res["similarity_score"])
-                
-                logger.debug(f"Reranked {len(documents)} candidates to top {len(formatted_results)}")
-            
-            return formatted_results
-            
-        except Exception as e:
-            logger.error(f"Text search failed: {e}")
-            return []
-    
-    def delete_documents(self, ids: List[str]) -> bool:
-        """Delete documents by IDs.
-        
-        Args:
-            ids: List of document IDs to delete
-            
-        Returns:
-            True if successful, False otherwise
-        """
-        try:
-            self.collection.delete(ids=ids)
-            return True
-        except Exception as e:
-            logger.error(f"Failed to delete documents: {e}")
-            return False
-    
-    def update_documents(self,
-                        ids: List[str],
-                        documents: Optional[List[str]] = None,
-                        embeddings: Optional[List[List[float]]] = None,
-                        metadatas: Optional[List[Dict[str, Any]]] = None) -> bool:
-        """Update existing documents.
-        
-        Args:
-            ids: List of document IDs to update
-            documents: New document texts (optional)
-            embeddings: New embeddings (optional)
-            metadatas: New metadata (optional)
-            
-        Returns:
-            True if successful, False otherwise
-        """
-        try:
-            update_kwargs = {"ids": ids}
-            if documents:
-                update_kwargs["documents"] = documents
-            if embeddings:
-                update_kwargs["embeddings"] = embeddings
-            if metadatas:
-                update_kwargs["metadatas"] = metadatas
-            
-            self.collection.update(**update_kwargs)
-            return True
-        except Exception as e:
-            logger.error(f"Failed to update documents: {e}")
-            return False
+        query_embedding = embedding_service.encode_text(query_text)
+
+        initial_top_k = n_results * 4 if rerank else n_results
+
+        results = self.search(
+            query_embedding=query_embedding,
+            n_results=initial_top_k,
+            where=where
+        )
+
+        formatted_results = []
+        documents = results.get("documents", [[]])[0]
+        metadatas = results.get("metadatas", [[]])[0]
+        distances = results.get("distances", [[]])[0]
+
+        for doc, metadata, distance in zip(documents, metadatas, distances):
+            processed_metadata = metadata.copy()
+            for key in ["genes", "cell_types", "methods", "pathways", "topics"]:
+                if key in processed_metadata and processed_metadata[key]:
+                    processed_metadata[key] = [item.strip() for item in processed_metadata[key].split(",") if item.strip()]
+                else:
+                    processed_metadata[key] = []
+
+            formatted_results.append({
+                "content": doc,
+                "metadata": processed_metadata,
+                "distance": float(distance)
+            })
+
+        if rerank and formatted_results:
+            from .reranker import get_reranker
+            reranker = get_reranker()
+            formatted_results = reranker.rank(query_text, formatted_results, top_k=n_results)
+
+            logger.debug(f"Reranked {len(documents)} candidates to top {len(formatted_results)}")
+
+        # Guarantee every result exposes a numeric similarity_score for callers,
+        # regardless of the rerank path (rerank off, or reranker fell back to
+        # distance-ordered docs without a score).
+        for res in formatted_results:
+            score = res.get("similarity_score")
+            if score is None:
+                score = 1.0 - float(res["distance"])
+            res["similarity_score"] = float(score)
+
+        return formatted_results
     
     def get_document_count(self) -> int:
         """Get the total number of documents in the collection."""

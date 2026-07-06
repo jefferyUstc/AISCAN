@@ -175,3 +175,6 @@ data/
 models/
 test_doc_*
 tests/
+
+# Backend pytest suite — the broad `tests/` rule above would otherwise ignore it
+!backend/tests/

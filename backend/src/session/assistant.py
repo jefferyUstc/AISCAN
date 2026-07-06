@@ -29,6 +29,25 @@ from ..rag import get_embedding_service, get_vector_store
 LOGGER = logging.getLogger(__name__)
 
 
+def _iter_filter_pairs(filters: Optional[object]):
+    """Yield normalized (dimension, value) string pairs from raw context filters.
+
+    Accepts both dict and Filter entries and skips incomplete ones, giving
+    `_build_agent_context` and `_humanize_filters` a single parsing path.
+    """
+    for item in filters or []:
+        if isinstance(item, dict):
+            dimension = item.get("dimension")
+            value = item.get("value")
+        elif isinstance(item, Filter):
+            dimension = item.dimension
+            value = item.value
+        else:
+            continue
+        if dimension and value:
+            yield str(dimension), str(value)
+
+
 class SessionAwareAssistantEngine:
     """Assistant orchestrator using OpenAI Agents SDK built-in sessions.
 
@@ -174,13 +193,10 @@ class SessionAwareAssistantEngine:
         return f"[Active filters: {filter_text}]\n\n{prompt}"
 
     def _build_agent_context(self, context: Dict[str, Any]) -> AgentContext:
-        request_filters: List[Filter] = []
-        for item in context.get("filters") or []:
-            if isinstance(item, dict):
-                dimension = item.get("dimension")
-                value = item.get("value")
-                if dimension and value:
-                    request_filters.append(Filter(dimension=str(dimension), value=str(value)))
+        request_filters = [
+            Filter(dimension=dimension, value=value)
+            for dimension, value in _iter_filter_pairs(context.get("filters"))
+        ]
         return AgentContext(
             dataset_store=self.dataset_store,
             request_filters=request_filters,
@@ -232,17 +248,7 @@ class SessionAwareAssistantEngine:
 
     @staticmethod
     def _humanize_filters(filters: Optional[object]) -> str:
-        if not filters:
-            return "none"
-        elements: List[str] = []
-        for filter_ in filters:
-            if isinstance(filter_, dict):
-                dimension = filter_.get("dimension")
-                value = filter_.get("value")
-                if dimension and value:
-                    elements.append(f"{dimension}={value}")
-            elif isinstance(filter_, Filter):
-                elements.append(f"{filter_.dimension}={filter_.value}")
+        elements = [f"{dimension}={value}" for dimension, value in _iter_filter_pairs(filters)]
         return ", ".join(elements) or "none"
 
     async def get_session_messages(self, user_id: str, session_id: str) -> List[Dict[str, Any]]:
