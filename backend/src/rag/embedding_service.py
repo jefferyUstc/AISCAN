@@ -62,7 +62,7 @@ class EmbeddingService:
                 
             except Exception as e:
                 logger.error(f"Failed to load embedding model: {e}")
-                raise RuntimeError(f"Could not initialize embedding model: {e}")
+                raise RuntimeError(f"Could not initialize embedding model: {e}") from e
         
         return self._model
     
@@ -84,16 +84,11 @@ class EmbeddingService:
             List of float values representing the embedding
         """
         if not text or not text.strip():
-            logger.warning("Empty text provided for encoding")
-            return [0.0] * self.embedding_dimension
-        
-        try:
-            model = self._load_model()
-            embedding = model.encode(text.strip(), normalize_embeddings=normalize)
-            return embedding.tolist()
-        except Exception as e:
-            logger.error(f"Failed to encode text: {e}")
-            return [0.0] * self.embedding_dimension
+            raise ValueError("Cannot encode empty or whitespace-only text")
+
+        model = self._load_model()
+        embedding = model.encode(text.strip(), normalize_embeddings=normalize)
+        return embedding.tolist()
     
     def encode_batch(self, 
                     texts: List[str], 
@@ -122,39 +117,16 @@ class EmbeddingService:
             logger.warning(f"Filtered out {len(texts) - len(valid_texts)} empty texts")
         
         if not valid_texts:
-            return [[0.0] * self.embedding_dimension] * len(texts)
-        
-        try:
-            model = self._load_model()
-            embeddings = model.encode(
-                valid_texts,
-                batch_size=batch_size,
-                normalize_embeddings=normalize,
-                show_progress_bar=show_progress
-            )
-            return embeddings.tolist()
-        except Exception as e:
-            logger.error(f"Failed to encode batch: {e}")
-            return [[0.0] * self.embedding_dimension] * len(valid_texts)
-    
-    def compute_similarity(self, text1: str, text2: str) -> float:
-        """Compute cosine similarity between two texts.
-        
-        Args:
-            text1: First text
-            text2: Second text
-            
-        Returns:
-            Cosine similarity score between -1 and 1
-        """
-        try:
-            model = self._load_model()
-            embeddings = model.encode([text1, text2], normalize_embeddings=True)
-            similarity = float(embeddings[0] @ embeddings[1].T)
-            return similarity
-        except Exception as e:
-            logger.error(f"Failed to compute similarity: {e}")
-            return 0.0
+            raise ValueError("Cannot encode a batch of only empty or whitespace-only texts")
+
+        model = self._load_model()
+        embeddings = model.encode(
+            valid_texts,
+            batch_size=batch_size,
+            normalize_embeddings=normalize,
+            show_progress_bar=show_progress
+        )
+        return embeddings.tolist()
     
     def health_check(self) -> dict:
         """Perform health check on the embedding service.

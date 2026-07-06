@@ -14,14 +14,16 @@ from ..config.paths import Paths
 
 
 class SessionConfig(BaseModel):
-    """Configuration for session management.
-    
-    Note: Most session operations are now handled by the SDK.
-    This config is kept for any custom cleanup/management needs.
+    """Resolved session-management config for the cleanup manager/scheduler.
+
+    The three tuning knobs mirror ``SessionSettings`` and have no defaults on
+    purpose: that keeps ``SessionSettings`` the single source of truth and
+    forces construction through :func:`get_session_config`. ``database_path``
+    is resolved from ``Paths`` and is not part of ``SessionSettings``.
     """
-    max_session_age_hours: int = 168
-    max_idle_hours: int = 24
-    cleanup_interval_minutes: int = 60
+    max_session_age_hours: int
+    max_idle_hours: int
+    cleanup_interval_minutes: int
     database_path: Optional[str] = None
 
 

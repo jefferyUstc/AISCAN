@@ -1,7 +1,8 @@
 """AISCAN Backend Settings.
 
 Centralized configuration with environment variable support.
-Environment variables: AISCAN_MODEL, AISCAN_DATASET, AISCAN_ORGANISM, OPENAI_API_KEY
+Environment variables: AISCAN_MODEL, AISCAN_ORGANISM, AISCAN_CHEMBL_MCP_PATH,
+OPENAI_API_KEY (plus nested AISCAN_<SECTION>__<FIELD>).
 """
 
 from __future__ import annotations
@@ -9,7 +10,7 @@ from __future__ import annotations
 import os
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .paths import Paths
@@ -67,14 +68,11 @@ class SessionSettings(BaseModel):
 class WebSearchSettings(BaseModel):
     """Web search configuration."""
     max_results: int = 5
-    max_content_length: int = 8000
-    request_timeout: int = 30
-    retry_count: int = 3
 
 
 class DatasetDisplaySettings(BaseModel):
     """Dataset display configuration.
-    
+
     Note: Named 'DatasetDisplaySettings' to avoid conflict with AISCAN_DATASET env var,
     which is automatically mapped to 'dataset' field by pydantic-settings.
     """
@@ -95,17 +93,21 @@ class APISettings(BaseModel):
 
 class Settings(BaseSettings):
     """Main settings class with environment variable support."""
-    
+
     model_config = SettingsConfigDict(
         env_prefix="AISCAN_",
         env_nested_delimiter="__",
         extra="ignore",
     )
-    
-    openai_api_key: Optional[str] = None
-    dataset_path: Optional[str] = None
-    organism: str = "Unknown"
-    
+
+    # OPENAI_API_KEY is the conventional (unprefixed) name; also accept the
+    # AISCAN_-prefixed form for consistency.
+    openai_api_key: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("OPENAI_API_KEY", "AISCAN_OPENAI_API_KEY"),
+    )
+    organism: str = "Unknown"  # AISCAN_ORGANISM via env_prefix
+
     llm: LLMSettings = Field(default_factory=LLMSettings)
     embedding: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
     rag: RAGSettings = Field(default_factory=RAGSettings)
@@ -113,35 +115,33 @@ class Settings(BaseSettings):
     web_search: WebSearchSettings = Field(default_factory=WebSearchSettings)
     dataset_display: DatasetDisplaySettings = Field(default_factory=DatasetDisplaySettings)
     api: APISettings = Field(default_factory=APISettings)
-    
-    chembl_mcp_path: Optional[str] = None
-    
-    def __init__(self, **kwargs):
-        if "openai_api_key" not in kwargs:
-            kwargs["openai_api_key"] = os.getenv("OPENAI_API_KEY")
-        
-        if "dataset_path" not in kwargs:
-            kwargs["dataset_path"] = os.getenv("AISCAN_DATASET")
-        
-        env_organism = os.getenv("AISCAN_ORGANISM")
-        if env_organism and "organism" not in kwargs:
-            kwargs["organism"] = env_organism
-        
-        legacy_model = os.getenv("AISCAN_MODEL")
-        if legacy_model and "llm" not in kwargs:
-            kwargs["llm"] = LLMSettings(model_name=legacy_model)
-        
-        if "chembl_mcp_path" not in kwargs:
-            env_path = os.getenv("AISCAN_CHEMBL_MCP_PATH")
-            if env_path:
-                kwargs["chembl_mcp_path"] = env_path
-            else:
-                # Default path relative to project root (avoid relying on process CWD)
-                default_path = Paths.PROJECT_ROOT / "backend/mcp-servers/chembl-mcp-server/build/index.js"
-                if default_path.exists():
-                    kwargs["chembl_mcp_path"] = str(default_path)
 
-        super().__init__(**kwargs)
+    chembl_mcp_path: Optional[str] = None  # AISCAN_CHEMBL_MCP_PATH via env_prefix
+
+    @model_validator(mode="before")
+    @classmethod
+    def _apply_legacy_and_defaults(cls, data):
+        """Two things pydantic-settings can't express declaratively:
+        the legacy flat AISCAN_MODEL alias for the nested llm.model_name, and a
+        filesystem-derived default for the ChEMBL MCP path.
+        """
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+
+        if "llm" not in data:
+            legacy_model = os.getenv("AISCAN_MODEL")
+            if legacy_model:
+                data["llm"] = {"model_name": legacy_model}
+
+        if "chembl_mcp_path" not in data and not os.getenv("AISCAN_CHEMBL_MCP_PATH"):
+            default_path = (
+                Paths.PROJECT_ROOT / "backend/mcp-servers/chembl-mcp-server/build/index.js"
+            )
+            if default_path.exists():
+                data["chembl_mcp_path"] = str(default_path)
+
+        return data
 
 
 _settings: Optional[Settings] = None
@@ -156,6 +156,6 @@ def get_settings() -> Settings:
 
 
 def reset_settings() -> None:
-    """Reset global settings instance (for testing)."""
+    """Reset global settings instance (used by tests)."""
     global _settings
     _settings = None

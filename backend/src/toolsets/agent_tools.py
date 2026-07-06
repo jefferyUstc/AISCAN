@@ -5,6 +5,7 @@ These tools are decorated with @function_tool and require AgentContext.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from dataclasses import dataclass, field
@@ -121,7 +122,7 @@ def resolve_embedding(
 
 
 @function_tool
-def search_knowledge_base(
+async def search_knowledge_base(
     ctx: RunContextWrapper[AgentContext],
     query: str,
     max_results: int = 3
@@ -146,7 +147,8 @@ def search_knowledge_base(
     embedding_service = context.embedding_service or get_embedding_service()
     vector_store = context.vector_store or get_vector_store()
     
-    search_results = vector_store.search_by_text(
+    search_results = await asyncio.to_thread(
+        vector_store.search_by_text,
         query_text=query,
         embedding_service=embedding_service,
         n_results=max_results
@@ -181,7 +183,7 @@ def search_knowledge_base(
 
 
 @function_tool
-def web_search(
+async def web_search(
     ctx: RunContextWrapper[AgentContext],
     query: str,
     max_results: int = 5
@@ -201,5 +203,5 @@ def web_search(
     Returns:
         WebSearchPayload with search results including titles, URLs, and snippets
     """
-    return _search_web(query, max_results)
+    return await asyncio.to_thread(_search_web, query, max_results)
 

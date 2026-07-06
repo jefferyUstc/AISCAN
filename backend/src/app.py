@@ -10,9 +10,11 @@ from agents import set_tracing_disabled
 from agents.mcp import MCPServerStdio
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from .config import Paths, get_settings
 from .dataset_store import DatasetStore
+from .errors import NotFoundError
 from .models import (
     AssistantRequest,
     AssistantResponse,
@@ -118,6 +120,20 @@ app.add_middleware(
 )
 
 
+@app.exception_handler(NotFoundError)
+async def _not_found_handler(_request: Request, exc: NotFoundError) -> JSONResponse:
+    """Map a missing dataset resource to 404 in one place, so endpoints don't
+    each repeat a `try/except ValueError`."""
+    return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+
+@app.exception_handler(ValueError)
+async def _value_error_handler(_request: Request, exc: ValueError) -> JSONResponse:
+    """Store input-validation errors surface as 400 with their message. Genuine
+    bugs raise other exception types and still fall through to a 500."""
+    return JSONResponse(status_code=400, content={"detail": str(exc)})
+
+
 def get_dataset_store(request: Request) -> DatasetStore:
     return request.app.state.dataset_store
 
@@ -130,15 +146,21 @@ def get_cleanup_manager(request: Request) -> SessionCleanupManager:
     return request.app.state.cleanup_manager
 
 
+# Dataset routes are declared `def` (not `async def`): they call synchronous,
+# CPU-heavy scanpy methods, so FastAPI runs them in its threadpool instead of
+# blocking the event loop. The store serializes concurrent access with its own
+# lock. Assistant routes stay `async def` because they genuinely await.
+
+
 @app.get("/api/dataset/overview", response_model=DatasetResponse)
-async def get_dataset_overview(
+def get_dataset_overview(
     store: DatasetStore = Depends(get_dataset_store),
 ) -> DatasetResponse:
     return store.get_overview()
 
 
 @app.get("/api/dataset/embedding", response_model=EmbeddingResponse)
-async def get_dataset_embedding(
+def get_dataset_embedding(
     limit: int = 4000,
     embedding: Optional[str] = None,
     color_by: Optional[str] = None,
@@ -146,34 +168,31 @@ async def get_dataset_embedding(
     sample_fraction: Optional[float] = None,
     store: DatasetStore = Depends(get_dataset_store),
 ) -> EmbeddingResponse:
-    try:
-        filter_objects: List[Filter] = []
-        for raw in filters or []:
-            if not raw or ":" not in raw:
-                continue
-            dimension, value = raw.split(":", 1)
-            if dimension and value:
-                filter_objects.append(Filter(dimension=dimension, value=value))
-        return store.get_embedding(
-            limit=limit,
-            embedding_name=embedding,
-            color_by=color_by,
-            filters=filter_objects or None,
-            sample_fraction=sample_fraction,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    filter_objects: List[Filter] = []
+    for raw in filters or []:
+        if not raw or ":" not in raw:
+            continue
+        dimension, value = raw.split(":", 1)
+        if dimension and value:
+            filter_objects.append(Filter(dimension=dimension, value=value))
+    return store.get_embedding(
+        limit=limit,
+        embedding_name=embedding,
+        color_by=color_by,
+        filters=filter_objects or None,
+        sample_fraction=sample_fraction,
+    )
 
 
 @app.get("/api/dataset/options", response_model=DatasetOptionsResponse)
-async def get_dataset_options(
+def get_dataset_options(
     store: DatasetStore = Depends(get_dataset_store),
 ) -> DatasetOptionsResponse:
     return store.get_options()
 
 
 @app.get("/api/dataset/deg", response_model=DegResponse)
-async def get_deg(
+def get_deg(
     group: Optional[str] = None,
     groups_only: bool = False,
     store: DatasetStore = Depends(get_dataset_store),
@@ -184,19 +203,16 @@ async def get_deg(
 
 
 @app.get("/api/dataset/gene_expression", response_model=GeneExpressionResponse)
-async def get_gene_expression(
+def get_gene_expression(
     gene: str,
     groupby: Optional[str] = None,
     store: DatasetStore = Depends(get_dataset_store),
 ) -> GeneExpressionResponse:
-    try:
-        return store.get_gene_expression_by_group(gene, groupby)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return store.get_gene_expression_by_group(gene, groupby)
 
 
 @app.get("/api/dataset/gene_signature_violin", response_model=GeneSignatureViolinResponse)
-async def get_gene_signature_violin(
+def get_gene_signature_violin(
     genes: str,
     groupby: str,
     signature_name: Optional[str] = "signature",
@@ -205,71 +221,59 @@ async def get_gene_signature_violin(
     gene_list = [g.strip() for g in genes.split(",") if g.strip()]
     if not gene_list:
         raise HTTPException(status_code=400, detail="No genes provided")
-    try:
-        return store.get_gene_signature_violin(gene_list, groupby, signature_name or "signature")
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return store.get_gene_signature_violin(gene_list, groupby, signature_name or "signature")
 
 
 @app.get("/api/dataset/categorical_columns")
-async def get_categorical_columns(
+def get_categorical_columns(
     store: DatasetStore = Depends(get_dataset_store),
 ) -> List[str]:
     return store.get_categorical_obs_columns()
 
 
 @app.get("/api/dataset/pathways/categories")
-async def get_pathway_categories(
+def get_pathway_categories(
     store: DatasetStore = Depends(get_dataset_store),
 ) -> List[str]:
     return store.get_pathway_categories()
 
 
 @app.get("/api/dataset/pathways/{category}/pathways")
-async def get_pathways_in_category(
+def get_pathways_in_category(
     category: str,
     store: DatasetStore = Depends(get_dataset_store),
 ) -> List[str]:
-    try:
-        return store.get_pathways_in_category(category)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return store.get_pathways_in_category(category)
 
 
 @app.get("/api/dataset/pathways/{category}/{pathway}/genes")
-async def get_genes_in_pathway(
+def get_genes_in_pathway(
     category: str,
     pathway: str,
     store: DatasetStore = Depends(get_dataset_store),
 ) -> List[str]:
-    try:
-        return store.get_genes_in_pathway(category, pathway)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return store.get_genes_in_pathway(category, pathway)
 
 
 @app.get("/api/dataset/go_enrichment", response_model=GOEnrichmentResponse)
-async def get_go_enrichment(
+def get_go_enrichment(
     group: str,
     min_lfc: float = 0.5,
     max_pval: float = 0.05,
     store: DatasetStore = Depends(get_dataset_store),
 ) -> GOEnrichmentResponse:
-    try:
-        return store.get_go_enrichment(group, min_lfc, max_pval)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return store.get_go_enrichment(group, min_lfc, max_pval)
 
 
 @app.get("/api/dataset/drug2cell/status", response_model=Drug2CellStatusResponse)
-async def get_drug2cell_status(
+def get_drug2cell_status(
     store: DatasetStore = Depends(get_dataset_store),
 ) -> Drug2CellStatusResponse:
     return store.get_drug2cell_status()
 
 
 @app.post("/api/dataset/drug2cell/compute", response_model=Drug2CellStatusResponse)
-async def compute_drug2cell(
+def compute_drug2cell(
     use_raw: bool = True,
     store: DatasetStore = Depends(get_dataset_store),
 ) -> Drug2CellStatusResponse:
@@ -277,16 +281,13 @@ async def compute_drug2cell(
 
 
 @app.get("/api/dataset/drug2cell/dotplot", response_model=Drug2CellDotplotResponse)
-async def get_drug2cell_dotplot(
+def get_drug2cell_dotplot(
     groupby: str,
     n_genes: int = 10,
     split_by: Optional[str] = None,
     store: DatasetStore = Depends(get_dataset_store),
 ) -> Drug2CellDotplotResponse:
-    try:
-        return store.get_drug2cell_dotplot(groupby, n_genes, split_by)
-    except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return store.get_drug2cell_dotplot(groupby, n_genes, split_by)
 
 
 @app.post("/api/assistant/chat", response_model=AssistantResponse)
@@ -314,14 +315,14 @@ async def get_session_messages(
 
 
 @app.get("/api/assistant/session-stats")
-async def get_session_stats(
+def get_session_stats(
     manager: SessionCleanupManager = Depends(get_cleanup_manager),
 ):
     return manager.get_session_stats()
 
 
 @app.post("/api/assistant/cleanup-sessions")
-async def cleanup_sessions(
+def cleanup_sessions(
     manager: SessionCleanupManager = Depends(get_cleanup_manager),
 ):
     return manager.cleanup_old_sessions()
