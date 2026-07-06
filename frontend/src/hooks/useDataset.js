@@ -82,9 +82,16 @@ export function useDataset() {
   return {
     dataset,
     hasBackendDataset,
+    // Only the initial overview blocks with a loading state; options load
+    // progressively. But an options *error* is surfaced too — otherwise a
+    // failed /options silently renders an empty control panel.
     isLoading: overviewQuery.isPending,
-    isError: overviewQuery.isError,
-    retry: overviewQuery.refetch,
+    isError: overviewQuery.isError || optionsQuery.isError,
+    error: overviewQuery.error || optionsQuery.error,
+    retry: () => {
+      overviewQuery.refetch();
+      optionsQuery.refetch();
+    },
     obsAttributes,
     geneOptions,
     embeddings,

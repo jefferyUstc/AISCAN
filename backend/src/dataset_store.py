@@ -885,15 +885,6 @@ class DatasetStore:
         return GeneExpressionResponse(gene=display or gene, points=points)
 
     @_synchronized
-    def get_categorical_obs_columns(self) -> List[str]:
-        """Return list of categorical observation columns suitable for grouping."""
-        categorical_cols = []
-        for attr in self.obs_attributes:
-            if attr.kind != "numeric":
-                categorical_cols.append(attr.name)
-        return categorical_cols
-
-    @_synchronized
     def get_gene_signature_violin(
         self,
         genes: List[str],

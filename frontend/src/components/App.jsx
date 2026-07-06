@@ -17,7 +17,7 @@ import { useDraggable } from "../hooks/useDraggable.js";
 import { useViz } from "../state/VizContext.jsx";
 import { getPointCategoryLabel } from "../utils/points.js";
 import { downloadText } from "../utils/download.js";
-import BackendUnavailable from "./BackendUnavailable.jsx";
+import DatasetLoadError from "./DatasetLoadError.jsx";
 
 const WORKSPACES = [
   { id: "canvas", label: "Cell Panorama" },
@@ -32,6 +32,7 @@ export default function App() {
     hasBackendDataset,
     isLoading: datasetLoading,
     isError: datasetError,
+    error: datasetErrorObj,
     retry: retryDataset,
     obsAttributes,
     geneOptions,
@@ -175,33 +176,19 @@ export default function App() {
     return attr?.colors || {};
   }, [viz.colorMode, selectedObs, obsAttributes]);
 
+  // Compact view descriptor sent to the assistant. Deliberately excludes
+  // rendering-only fields and the (potentially huge) selectedIds — the backend
+  // only reads `filters`, and none of the point-style/selection state is useful
+  // context for it.
   const datasetContext = useMemo(
     () => ({
       datasetId: dataset?.id,
       activeEmbedding: selectedEmbedding || dataset?.activeEmbedding,
+      embedding: selectedEmbedding,
       colorMode: viz.colorMode,
       colorSelection: viz.colorMode === "gene" ? viz.activeGene : selectedObs,
-      embedding: selectedEmbedding,
-      sampleFraction: viz.sampleFraction,
-      pointSize: viz.pointSize,
-      pointOpacity: viz.pointOpacity,
-      pointEdgeWidth: viz.pointEdgeWidth,
-      pointEdgeColor: viz.pointEdgeColor,
-      selectedIds: viz.selectedIds,
     }),
-    [
-      dataset,
-      selectedEmbedding,
-      selectedObs,
-      viz.colorMode,
-      viz.activeGene,
-      viz.sampleFraction,
-      viz.pointSize,
-      viz.pointOpacity,
-      viz.pointEdgeWidth,
-      viz.pointEdgeColor,
-      viz.selectedIds,
-    ]
+    [dataset, selectedEmbedding, selectedObs, viz.colorMode, viz.activeGene]
   );
 
   const handleDownloadSelection = useCallback(() => {
@@ -255,7 +242,7 @@ export default function App() {
       {import.meta.env.DEV && <SessionDebugPanel />}
       <Header />
       {datasetError ? (
-        <BackendUnavailable onRetry={retryDataset} />
+        <DatasetLoadError error={datasetErrorObj} onRetry={retryDataset} />
       ) : datasetLoading ? (
         <div className="app-status">Loading dataset…</div>
       ) : (

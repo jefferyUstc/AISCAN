@@ -111,10 +111,14 @@ app = FastAPI(
     version=_settings_for_app.api.version,
     lifespan=lifespan,
 )
+_cors_origins = _settings_for_app.api.cors_origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_settings_for_app.api.cors_origins,
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    # A wildcard origin is incompatible with credentials per the CORS spec, and
+    # this app authenticates via a request-body field (not cookies), so only
+    # claim to allow credentials when an explicit origin allow-list is set.
+    allow_credentials=_cors_origins != ["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -224,13 +228,6 @@ def get_gene_signature_violin(
     return store.get_gene_signature_violin(gene_list, groupby, signature_name or "signature")
 
 
-@app.get("/api/dataset/categorical_columns")
-def get_categorical_columns(
-    store: DatasetStore = Depends(get_dataset_store),
-) -> List[str]:
-    return store.get_categorical_obs_columns()
-
-
 @app.get("/api/dataset/pathways/categories")
 def get_pathway_categories(
     store: DatasetStore = Depends(get_dataset_store),
@@ -326,13 +323,3 @@ def cleanup_sessions(
     manager: SessionCleanupManager = Depends(get_cleanup_manager),
 ):
     return manager.cleanup_old_sessions()
-
-
-@app.delete("/api/assistant/session/{session_id}")
-async def clear_session(
-    session_id: str,
-    user_id: str = Query(...),
-    engine: SessionAwareAssistantEngine = Depends(get_assistant_engine),
-):
-    await engine.clear_session(user_id, session_id)
-    return {"status": "cleared", "session_id": session_id}

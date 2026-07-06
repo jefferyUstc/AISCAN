@@ -267,7 +267,3 @@ class SessionAwareAssistantEngine:
                 "content": content if isinstance(content, str) else str(content),
             })
         return messages
-
-    async def clear_session(self, user_id: str, session_id: str) -> None:
-        session = self._get_session(user_id, session_id)
-        await session.clear_session()

@@ -92,21 +92,9 @@ export function useAssistantChat({ onAssistantMessage } = {}) {
     }
   };
 
-  const clearSession = () => {
-    setSessionMessages([makeWelcomeMessage()]);
-    sessionIdRef.current = getSessionId();
-  };
-
-  const getUserInfo = () => ({
-    userId: userIdRef.current,
-    sessionId: sessionIdRef.current,
-  });
-
   return {
     messages: sessionMessages,
     isLoading,
     sendMessage,
-    clearSession,
-    getUserInfo,
   };
 }

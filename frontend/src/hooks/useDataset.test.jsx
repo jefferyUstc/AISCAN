@@ -49,4 +49,26 @@ describe("useDataset", () => {
     await waitFor(() => expect(result.current.selectedEmbedding).toBe("umap"));
     await waitFor(() => expect(result.current.selectedObs).toBe("leiden"));
   });
+
+  it("surfaces an options-endpoint failure instead of degrading silently", async () => {
+    const overview = { dataset: { id: "d1", name: "D1", activeEmbedding: "umap" } };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url) =>
+        url.includes("options")
+          ? Promise.resolve({
+              ok: false,
+              status: 500,
+              json: () => Promise.resolve({ detail: "options boom" }),
+            })
+          : Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(overview) })
+      )
+    );
+
+    const { result } = renderHook(() => useDataset(), { wrapper: makeWrapper() });
+
+    await waitFor(() => expect(result.current.hasBackendDataset).toBe(true));
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(result.current.error?.message).toBe("options boom");
+  });
 });
